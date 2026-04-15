@@ -1,0 +1,14 @@
+{
+  "name": "whatsapp-bot-demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Demo webhook: bot tipo consultorio (terapia) para WhatsApp Cloud API",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  }
+}
