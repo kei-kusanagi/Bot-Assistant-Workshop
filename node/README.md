@@ -1,6 +1,10 @@
-# Demo: bot de WhatsApp (consultorio terapia simulado)
+# Bots de WhatsApp en este repo
 
-Sirve para **aprender** el flujo oficial de **WhatsApp Cloud API**: tu celular escribe al número de prueba de Meta y este servidor responde con un menú tipo consultorio (información + simulación de cita “por confirmar”).
+## 1) Bot Cloud API (Meta + webhook)
+
+Carpeta: `whatsapp-bot-demo`
+
+Sirve para **aprender** el flujo oficial de **WhatsApp Cloud API**: tu celular escribe al numero de prueba de Meta y este servidor responde con un menu tipo consultorio (informacion + simulacion de cita "por confirmar").
 
 No sustituye un producto en producción (tokens, verificación de negocio, plantillas, etc. van aparte).
 
@@ -97,6 +101,14 @@ Todo el estado va en **memoria** (`Map`): si reinicias el servidor, se pierde. M
 - **Plantillas** para recordatorios fuera de la ventana de conversación.
 - Webhook con **validación de firma** `X-Hub-Signature-256` (aquí se omitió a propósito para simplificar el aprendizaje).
 
-## OpenClaw
+## 2) Bot alternativo para pruebas rapidas (Baileys + QR)
 
-OpenClaw es otra forma de conectar IA a WhatsApp; **esta carpeta no lo usa**: aquí solo hay **Node + Express + API oficial**, para que veas el webhook “crudo” y puedas evolucionar a Supabase cuando quieras.
+Carpeta: `whatsapp-bot-baileys`
+
+Este enfoque es distinto al de Meta Cloud API:
+
+- no usa webhook ni ngrok
+- inicia sesion por QR (WhatsApp Web)
+- guarda citas en `data/citas.json`
+
+Guia: `whatsapp-bot-baileys/tutorial.md` (paso a paso) y `whatsapp-bot-baileys/README.md` (resumen).
