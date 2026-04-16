@@ -1,3 +1,6 @@
+# Contexto local para retomar trabajo entre sesiones (no versionar)
+CONTEXTO_PROYECTO.md
+
 # OS / sistema
 .DS_Store
 Thumbs.db
