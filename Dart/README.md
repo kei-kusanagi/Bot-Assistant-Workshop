@@ -11,5 +11,6 @@ dart run
 ```
 
 - **Diario de pasos / equivalencias:** [docs/MIGRATION_FROM_NODE_BAILEYS.md](docs/MIGRATION_FROM_NODE_BAILEYS.md)
+- **Convención de commits (inglés):** [docs/SEMANTIC_COMMITS.md](docs/SEMANTIC_COMMITS.md)
 - **Detalle del paquete:** [whatsapp_qr_pairing/README.md](whatsapp_qr_pairing/README.md)
 - **Docker + Ollama (servicio auxiliar):** [docker-compose.yml](docker-compose.yml)
