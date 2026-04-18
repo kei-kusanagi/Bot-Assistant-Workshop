@@ -1,0 +1,31 @@
+# Servicios de apoyo para el taller Dart + opcional Ollama (modelos locales).
+# El binario Dart no llama a Ollama en esta fase; queda expuesto para integraciones futuras.
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  whatsapp-dart:
+    build:
+      context: ./whatsapp_qr_pairing
+      dockerfile: Dockerfile
+    depends_on:
+      - ollama
+    environment:
+      # Monta tu .so real en ./neonize/libneonize.so o ajusta la variable:
+      - NEONIZE_PATH=/neonize/libneonize.so
+    volumes:
+      - ./whatsapp_qr_pairing/data:/app/data
+      # Coloca aquí la librería Neonize para Linux, p. ej. neonize-linux-amd64.so renombrada:
+      - ./neonize:/neonize:ro
+    stdin_open: true
+    tty: true
+    profiles:
+      - whatsapp
+
+volumes:
+  ollama_data:
