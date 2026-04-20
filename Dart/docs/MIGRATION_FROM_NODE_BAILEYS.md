@@ -4,6 +4,49 @@ Este documento es el **diario de pasos** que pidió el equipo: qué equivalencia
 
 ---
 
+## Cómo se “siente” igual que en Node (lo que ya probaste)
+
+En **Node + Baileys** hiciste esto, en orden:
+
+1. `npm start` → el proceso arranca.
+2. Sale un **QR en la terminal** (o reconecta con `.auth/` guardado).
+3. En el móvil: **WhatsApp → Dispositivos vinculados → escanear**.
+4. Cuando conecta, el bot puede **recibir mensajes** (en tu demo, menú de citas).
+
+En **Dart + Neonize** es el **mismo ritual de usuario** (pasos 1–3). La diferencia es **por debajo**:
+
+| Qué notas tú | Node (Baileys) | Dart (Neonize) |
+|--------------|----------------|----------------|
+| Comando para arrancar | `npm start` en `whatsapp-bot-baileys` | `dart run` en `whatsapp_qr_pairing` (con `NEONIZE_PATH` ya definido) |
+| Dependencia extra | ninguna (npm trae todo JS) | **archivo `.dll` / `.so`** aparte + variable `NEONIZE_PATH` |
+| Dónde vive la sesión | carpeta `.auth/` | `data/neonize.db` + `data/temp/` |
+| Qué sale en pantalla | QR ASCII + “Bot conectado…” | QR ASCII + “Conectado a WhatsApp…” |
+
+Este proyecto Dart **solo implementa hasta “conectado”**; el menú de citas sigue siendo el ejemplo Node si quieres comparar “misma cuenta, otro stack”.
+
+### Paso A.1 — Descargar la DLL (Windows) hoy
+
+1. Abre los **releases de Neonize** (librería nativa, no el paquete Dart):  
+   https://github.com/krypton-byte/neonize/releases/
+2. Descarga el **.dll** para Windows (nombre puede variar según el release; busca *windows* / *amd64* / `.dll`).
+3. Guárdalo en una ruta fija, por ejemplo `C:\libs\neonize-windows-amd64.dll`.
+
+### Paso A.2 — Ejecutar el CLI del repo
+
+```powershell
+cd "c:\Users\admin\Desktop\Proyectos\Bot Assistant Workshop\Dart\whatsapp_qr_pairing"
+$env:NEONIZE_PATH="C:\libs\neonize-windows-amd64.dll"
+dart run
+```
+
+(Ajusta la ruta al archivo real que descargaste.)
+
+4. Escanea el QR como hiciste con Baileys. Cuando veas **“Conectado a WhatsApp…”**, pulsa **Enter** en la terminal para desconectar (así está escrito el demo).
+
+Si en **releases** no hay un `.dll` claro o falla al cargar, copia el mensaje de error o una captura del listado de assets del release y lo vemos en el siguiente mensaje.
+
+---
+
 ## Paso 0 — Alcance (qué se tradujo y qué no)
 
 | En Node (`whatsapp-bot-baileys`) | En Dart (`whatsapp_qr_pairing`) |
