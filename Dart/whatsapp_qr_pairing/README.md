@@ -11,8 +11,17 @@ Ver pasos y contexto en [../docs/MIGRATION_FROM_NODE_BAILEYS.md](../docs/MIGRATI
 
 ## Ejecutar (local)
 
+**Si guardaste `neonize-windows-amd64.dll` en esta misma carpeta** (recomendado para pruebas):
+
 ```powershell
-cd Dart\whatsapp_qr_pairing
+cd "ruta\al\repo\Dart\whatsapp_qr_pairing"
+$env:NEONIZE_PATH = (Join-Path $PWD "neonize-windows-amd64.dll")
+dart run
+```
+
+**Si el `.dll` está en otra carpeta**, usa la ruta absoluta:
+
+```powershell
 $env:NEONIZE_PATH="C:\ruta\completa\neonize-windows-amd64.dll"
 dart run
 ```
