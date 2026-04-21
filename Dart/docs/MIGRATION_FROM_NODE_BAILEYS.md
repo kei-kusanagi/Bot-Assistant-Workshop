@@ -24,12 +24,38 @@ En **Dart + Neonize** es el **mismo ritual de usuario** (pasos 1–3). La difere
 
 Este proyecto Dart **solo implementa hasta “conectado”**; el menú de citas sigue siendo el ejemplo Node si quieres comparar “misma cuenta, otro stack”.
 
-### Paso A.1 — Descargar la DLL (Windows) hoy
+### Qué demonios es “Neonize” y por qué hay que descargar algo aparte
 
-1. Abre los **releases de Neonize** (librería nativa, no el paquete Dart):  
-   https://github.com/krypton-byte/neonize/releases/
-2. Descarga el **.dll** para Windows (nombre puede variar según el release; busca *windows* / *amd64* / `.dll`).
-3. Guárdalo en una ruta fija, por ejemplo `C:\libs\neonize-windows-amd64.dll`.
+Hay **dos cosas distintas** con nombre parecido:
+
+1. **Paquete Dart `neonize` (en pub.dev)**  
+   Es solo **código Dart**: tipos, llamadas FFI, helpers. Eso lo instala `dart pub get` **solo**.  
+   Ese código **no puede** hablar solo con los servidores de WhatsApp: necesita un **motor compilado** (binario nativo).
+
+2. **Librería nativa Neonize (el `.dll` / `.so`)**  
+   Es un **archivo binario** generado por el proyecto **[neonize en GitHub](https://github.com/krypton-byte/neonize)** (por debajo, lógica tipo **whatsmeow** / Go).  
+   Ahí está el protocolo pesado (cifrado, sesión, etc.), igual que Baileys trae su stack dentro de `node_modules`, pero en el ecosistema Neonize **no** lo empaquetan dentro del paquete Dart de pub: **tú** descargas el `.dll` y se lo indicas con **`NEONIZE_PATH`**.
+
+**Por qué no ves `.dll` a simple vista en GitHub:** en cada release hay **muchos** archivos (Linux, macOS, Android, varias versiones de Windows, wheels de Python…). La página a veces muestra solo unos cuantos y el resto está tras **“Show all 25 assets”** (o similar). Ahí **sí** están los `.dll`.
+
+**Qué archivo bajar en Windows (PC normal 64 bits):**
+
+- Nombre típico: **`neonize-windows-amd64.dll`**
+- Si tu Windows es muy antiguo o 32 bits: **`neonize-windows-386.dll`**
+- ARM (Surface X, etc.): **`neonize-windows-arm64.dll`**
+
+En el **último release** al momento de revisar la API de GitHub, el enlace directo de ejemplo para amd64 era (el número de versión **cambia** con el tiempo; si falla, entra a *Releases* y copia el URL del mismo nombre en el release más nuevo):
+
+https://github.com/krypton-byte/neonize/releases/download/0.3.16.post0/neonize-windows-amd64.dll
+
+Guárdalo donde quieras, por ejemplo `C:\libs\neonize-windows-amd64.dll`.
+
+### Paso A.1 — Descargar la DLL (Windows)
+
+1. Abre https://github.com/krypton-byte/neonize/releases/
+2. Entra al **release más reciente**.
+3. Desplázate a **Assets** y pulsa **“Show all … assets”** si no ves la lista completa.
+4. Descarga **`neonize-windows-amd64.dll`** (o la variante que corresponda a tu CPU).
 
 ### Paso A.2 — Ejecutar el CLI del repo
 
@@ -39,11 +65,11 @@ $env:NEONIZE_PATH="C:\libs\neonize-windows-amd64.dll"
 dart run
 ```
 
-(Ajusta la ruta al archivo real que descargaste.)
+(Sustituye por la ruta real donde guardaste el `.dll`.)
 
 4. Escanea el QR como hiciste con Baileys. Cuando veas **“Conectado a WhatsApp…”**, pulsa **Enter** en la terminal para desconectar (así está escrito el demo).
 
-Si en **releases** no hay un `.dll` claro o falla al cargar, copia el mensaje de error o una captura del listado de assets del release y lo vemos en el siguiente mensaje.
+Si falla al cargar, copia el **mensaje de error completo** de la terminal (o dime qué versión de Windows / 32 o 64 bits usas).
 
 ---
 
