@@ -27,3 +27,12 @@ These commits map one concern each (boss request: small, explainable steps):
 6. `chore(dart): add docker-compose with Ollama sidecar` — compose file; Ollama optional for future local LLM work.
 
 When extending the bot, keep splitting: e.g. `feat(dart): handle inbound text messages` as its own commit after the pairing baseline is stable.
+
+## Follow-up commits (same mission, later session)
+
+After the initial seven commits, these were added while clarifying Windows downloads and local setup:
+
+- `docs(dart): document Windows run with Neonize DLL beside pubspec`
+- `docs(dart): note local DLL path and gitignore in migration log`
+
+(Plus earlier follow-ups: Node parity guide, DLL asset names, `.whl` warning, `gitignore` for `neonize-*.dll`.)
