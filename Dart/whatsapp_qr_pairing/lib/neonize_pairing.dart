@@ -3,6 +3,20 @@ import 'dart:io';
 import 'package:neonize/neonize.dart';
 import 'package:path/path.dart' as p;
 
+String? _plainTextFromPayload(Message envelope) {
+  if (!envelope.hasMessage()) return null;
+  final wm = envelope.message;
+  if (wm.hasConversation()) {
+    final t = wm.conversation.trim();
+    return t.isEmpty ? null : t;
+  }
+  if (wm.hasExtendedTextMessage() && wm.extendedTextMessage.hasText()) {
+    final t = wm.extendedTextMessage.text.trim();
+    return t.isEmpty ? null : t;
+  }
+  return null;
+}
+
 /// Misma idea que `node/whatsapp-bot-baileys`: mostrar QR y vincular la cuenta
 /// (multi-dispositivo). Aquí el motor es **Neonize** (Go) vía FFI, no Baileys.
 void runQrPairing({required Directory workingDirectory}) {
@@ -33,6 +47,22 @@ void runQrPairing({required Directory workingDirectory}) {
 
   client.on<Connected>((_) {
     stdout.writeln('Conectado a WhatsApp (sesion lista).');
+  });
+
+  client.on<Message>((received) {
+    if (!received.hasInfo()) return;
+    final source = received.info.messageSource;
+    if (source.hasIsFromMe() && source.isFromMe) return;
+    if (!source.hasChat()) return;
+
+    final body = _plainTextFromPayload(received);
+    if (body == null) return;
+
+    stdout.writeln('[RX] $body');
+
+    final lower = body.toLowerCase();
+    final reply = lower == 'ping' ? 'pong' : 'Recibido: $body';
+    client.sendMessage(source.chat, text: reply);
   });
 
   stdout.writeln('Iniciando cliente Neonize...');
