@@ -74,6 +74,11 @@ dart run
 
 Si falla al cargar, copia el **mensaje de error completo** de la terminal (o dime qué versión de Windows / 32 o 64 bits usas).
 
+### Estado en el taller (referencia)
+
+- En el PC de desarrollo el `.dll` quedó colocado en **`Dart/whatsapp_qr_pairing/neonize-windows-amd64.dll`** junto al `pubspec.yaml`.
+- Ese archivo **no** se sube a Git: el `.gitignore` del paquete incluye `neonize-*.dll` para no versionar binarios ni sesiones.
+
 ---
 
 ## Paso 0 — Alcance (qué se tradujo y qué no)
