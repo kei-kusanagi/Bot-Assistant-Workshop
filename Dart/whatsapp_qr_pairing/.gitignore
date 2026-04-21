@@ -4,3 +4,8 @@
 
 # Sesión Neonize y temporales (sensibles / locales)
 /data/
+
+# Librería nativa descargada a mano (no versionar)
+neonize-*.dll
+neonize-*.so
+neonize-*.dylib
