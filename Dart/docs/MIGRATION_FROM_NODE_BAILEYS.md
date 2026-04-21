@@ -57,6 +57,9 @@ Guárdalo donde quieras, por ejemplo `C:\libs\neonize-windows-amd64.dll`.
 3. Desplázate a **Assets** y pulsa **“Show all … assets”** si no ves la lista completa.
 4. Descarga **`neonize-windows-amd64.dll`** (o la variante que corresponda a tu CPU).
 
+**No uses el archivo `.whl` (rueda de Python)**  
+Si al pulsar “Windows” o un enlace parecido te sale algo como `neonize-…-py310-none-win_amd64.whl` (“Archivo WHL”), eso es para **instalar Neonize en Python con pip**, **no** sirve para nuestro proyecto Dart. Cierra esa descarga y en la **misma lista de Assets** busca el que termina en **`.dll`**, nombre **`neonize-windows-amd64.dll`**.
+
 ### Paso A.2 — Ejecutar el CLI del repo
 
 ```powershell
