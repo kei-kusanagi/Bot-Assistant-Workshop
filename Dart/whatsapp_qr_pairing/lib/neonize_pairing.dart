@@ -11,8 +11,11 @@ void _writeQrAscii(String qrData) {
     stderr.writeln('(Cadena QR vacia; espera un momento o reinicia.)');
     return;
   }
-  final qrCode = qr_pkg.QrCode(4, qr_pkg.QrErrorCorrectLevel.L);
-  qrCode.addData(qrData);
+  // type 4 es demasiado pequeño para la cadena de pairing; elige versión adecuada.
+  final qrCode = qr_pkg.QrCode.fromData(
+    data: qrData,
+    errorCorrectLevel: qr_pkg.QrErrorCorrectLevel.L,
+  );
   final qrImage = qr_pkg.QrImage(qrCode);
   const dark = '██';
   const light = '  ';

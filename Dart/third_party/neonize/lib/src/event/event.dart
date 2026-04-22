@@ -51,8 +51,12 @@ class Event {
     int size,
     int code,
   ) {
-    Uint8List data = dataPointer.cast<Uint8>().asTypedList(size);
-    // Check if key is in expected range (1-44)
+    if (size < 0) return;
+    // Copia inmediata: con NativeCallable.listener el callback es asíncrono
+    // y el buffer C podría liberarse antes de que corra el isolate.
+    final data = Uint8List.fromList(
+      dataPointer.cast<Uint8>().asTypedList(size),
+    );
     emit(code, data);
   }
 

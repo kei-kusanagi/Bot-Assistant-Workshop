@@ -26,8 +26,9 @@ import 'package:fixnum/fixnum.dart' as fixnum;
 void _neonizeNativeLog(Pointer<Char> data, int size) {
   if (size <= 0 || size > 1 << 20) return;
   try {
-    final slice = data.cast<Uint8>().asTypedList(size);
-    log.fine(utf8.decode(slice, allowMalformed: true));
+    final view = data.cast<Uint8>().asTypedList(size);
+    final copy = Uint8List.fromList(view);
+    log.fine(utf8.decode(copy, allowMalformed: true));
   } catch (_) {}
 }
 
@@ -39,6 +40,8 @@ class NewAClient {
   late String myId;
   late Event event;
   late DeviceProps devicePropsConfig;
+  /// Mantiene vivos los [NativeCallable] de [connect] (FFI) hasta desconectar.
+  List<Object>? _keptFfiCallables;
   NewAClient({
     required this.name,
     String? id,
@@ -158,20 +161,28 @@ class NewAClient {
     log.fine('Database: ${config.databasePath}');
     log.fine('Device: $myId');
     
-    final emitter = NativeCallable<binder.EventCallback>.isolateLocal(
+    // Go/whatsmeow invoca estos callbacks desde hilos de trabajo, no el hilo
+    // mutator de Dart: isolateLocal aborta; listener programa en el isolate.
+    final emitter = NativeCallable<binder.EventCallback>.listener(
       event.rawEmit,
     );
-    final qrEmitter = NativeCallable<binder.QrCallback>.isolateLocal(
+    final qrEmitter = NativeCallable<binder.QrCallback>.listener(
       event.onRawQr,
     );
     final loginStatusEmitter =
-        NativeCallable<binder.OnLogginStatusCallback>.isolateLocal(
+        NativeCallable<binder.OnLogginStatusCallback>.listener(
           event.onLogginStatus,
         );
     final logBytesEmitter =
-        NativeCallable<binder.LogCallbackBytes2Native>.isolateLocal(
+        NativeCallable<binder.LogCallbackBytes2Native>.listener(
           _neonizeNativeLog,
         );
+    _keptFfiCallables = <Object>[
+      emitter,
+      qrEmitter,
+      loginStatusEmitter,
+      logBytesEmitter,
+    ];
 
     binder.connect(
       config.databasePath.toNativeUtf8().cast<Char>(),
@@ -198,6 +209,13 @@ class NewAClient {
   void disconnect() {
     log.info('Disconnecting from WhatsApp...');
     binder.disconnect(uuid);
+    final cbs = _keptFfiCallables;
+    if (cbs != null) {
+      for (final c in cbs) {
+        (c as NativeCallable<dynamic>).close();
+      }
+      _keptFfiCallables = null;
+    }
     log.info('Disconnected successfully');
   }
 
