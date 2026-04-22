@@ -14,3 +14,9 @@ dependencies:
 dev_dependencies:
   lints: ^6.0.0
   test: ^1.25.6
+
+# Neonize Go `Neonize()` adds a `logCb` FFI arg; pub.dev neonize 1.0.0 omits it and
+# crashes native (gobytes length / fault). Use patched local copy.
+dependency_overrides:
+  neonize:
+    path: ../third_party/neonize
