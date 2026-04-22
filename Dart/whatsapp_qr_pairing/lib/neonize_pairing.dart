@@ -2,6 +2,28 @@ import 'dart:io';
 
 import 'package:neonize/neonize.dart';
 import 'package:path/path.dart' as p;
+import 'package:qr/qr.dart' as qr_pkg;
+
+/// `neonize.qrTerminal` usa ANSI (fondo negro/blanco); en consolas Windows / Cursor
+/// a veces no se ve nada. Este dibujo usa caracteres UTF-8 y suele verse siempre.
+void _writeQrAscii(String qrData) {
+  if (qrData.isEmpty) {
+    stderr.writeln('(Cadena QR vacia; espera un momento o reinicia.)');
+    return;
+  }
+  final qrCode = qr_pkg.QrCode(4, qr_pkg.QrErrorCorrectLevel.L);
+  qrCode.addData(qrData);
+  final qrImage = qr_pkg.QrImage(qrCode);
+  const dark = '██';
+  const light = '  ';
+  for (var y = 0; y < qrImage.moduleCount; y++) {
+    final row = StringBuffer();
+    for (var x = 0; x < qrImage.moduleCount; x++) {
+      row.write(qrImage.isDark(y, x) ? dark : light);
+    }
+    stdout.writeln(row.toString());
+  }
+}
 
 String? _plainTextFromPayload(Message envelope) {
   if (!envelope.hasMessage()) return null;
@@ -41,7 +63,13 @@ void runQrPairing({required Directory workingDirectory}) {
       'Escanea este QR con WhatsApp (Ajustes > Dispositivos vinculados):',
     );
     stdout.writeln('');
-    qrTerminal(qrData, 2, size: 4);
+    stdout.writeln(
+      'Si no ves cuadros abajo, usa esta cadena en otro dispositivo '
+      '(p. ej. generador de QR en el navegador) o ensancha la terminal:',
+    );
+    stdout.writeln(qrData);
+    stdout.writeln('');
+    _writeQrAscii(qrData);
     stdout.writeln('');
   });
 
