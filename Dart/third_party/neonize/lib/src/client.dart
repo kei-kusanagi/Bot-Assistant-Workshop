@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:neonize/src/defproto/waConsumerApplication/WAConsumerApplication.pb.dart';
@@ -154,7 +155,9 @@ class NewAClient {
     if (jid != null) {
       jidbuff = jid!.writeToBuffer();
     }
-    final loglevel = "INFO";
+    // DEBUG ayuda a ver en consola el motivo de disconnect/timeout (whatsmeow).
+    final loglevel =
+        Platform.environment['NEONIZE_LOG_LEVEL']?.trim() ?? 'INFO';
     final subscribers = event.getSubscriber();
     
     log.info('Connecting to WhatsApp...');
