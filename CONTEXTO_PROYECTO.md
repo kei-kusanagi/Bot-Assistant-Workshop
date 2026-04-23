@@ -131,6 +131,12 @@
 - Escritorio Windows: `flutter run -d windows`
 - Navegador: `flutter run -d chrome`
 
+**Commits (inglés) asociados a este bloque (orden cronológico):**
+
+1. `fix(dart): honor NEONIZE_LOG_LEVEL in vendored neonize client`
+2. `docs: track CONTEXTO_PROYECTO and document Flutter Drago WebView limits`
+3. `feat(flutter): add whatsapp_wa_drago Drago sample and patch Windows inappwebview`
+
 ---
 
 ## Retomar la siguiente sesión — empieza aquí (abril 2026)
