@@ -1,7 +1,29 @@
 import 'dart:io';
 
+import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
 import 'package:whatsapp_qr_pairing/neonize_pairing.dart' deferred as pairing;
+
+/// Activa `package:logging` para el paquete `neonize` (emit, callbacks, etc.).
+void _configureDartLoggingFromEnv() {
+  final raw = Platform.environment['NEONIZE_LOG_LEVEL']?.trim().toUpperCase();
+  var level = Level.INFO;
+  if (raw == 'DEBUG' ||
+      raw == 'FINEST' ||
+      raw == 'FINE' ||
+      raw == 'ALL' ||
+      raw == 'TRACE') {
+    level = Level.ALL;
+  } else if (raw == 'WARNING' || raw == 'WARN') {
+    level = Level.WARNING;
+  } else if (raw == 'SEVERE' || raw == 'ERROR') {
+    level = Level.SEVERE;
+  }
+  Logger.root.level = level;
+  Logger.root.onRecord.listen((r) {
+    stdout.writeln('[neonize-dart] ${r.level.name}: ${r.message}');
+  });
+}
 
 /// Resuelve la ruta al binario Neonize: `NEONIZE_PATH` o, si falta, un archivo
 /// conocido en el directorio de trabajo (mismo criterio que README / Baileys).
@@ -28,6 +50,7 @@ String? _resolveNeonizeLibraryPath() {
 }
 
 Future<void> main(List<String> arguments) async {
+  _configureDartLoggingFromEnv();
   final neonizePath = _resolveNeonizeLibraryPath();
   if (neonizePath == null) {
     stderr.writeln(_missingNeonizePathMessage());
