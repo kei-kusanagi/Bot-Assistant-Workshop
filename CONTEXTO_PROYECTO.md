@@ -104,10 +104,38 @@
 - **Commits posteriores (auto-descubrimiento Neonize, abr. 2026):**
   8. `fix(neonize): resolve native library path when NEONIZE_PATH is unset`
   9. `feat(dart): auto-discover Neonize DLL and clarify whatsapp_qr_pairing entry`
+- **Commits — diagnóstico timeout sin QR (abr. 2026):** ver lista exacta bajo *Incidente: timeout sin entrega de QR*; resumen: hints en login, logging Dart desde `NEONIZE_LOG_LEVEL`, `DeviceProps` CHROME y documentación de último intento.
 - **Guía de convención (inglés):** `Dart/docs/SEMANTIC_COMMITS.md` — prefijos `feat` / `fix` / `docs` / `build` / `chore` y la tabla anterior para explicar al equipo o al jefe cómo se nombraron los commits.
 - **Git / push:** si en algún momento se habían subido al remoto **los 3 commits viejos** de Dart (antes de la reorganización), el historial local **diverge**; puede hacer falta **`git push --force-with-lease`** (solo si nadie más depende de esos SHAs) o coordinar. Si **nunca** se subieron esos tres, un `git push` normal alinea el remoto con estos siete commits.
 - **Ollama:** instalar desde https://ollama.com o usar el servicio del compose; **aún no** integrado en la lógica del bot (preparación para modelos locales / asistente después).
 - **Alcance explícito no portado a Dart en esta misión:** menú de citas, `citas.json`, comandos `doc`, etc. (siguen en Node/Baileys).
+
+#### Incidente: timeout sin entrega de QR (abr. 2026) — *último intento mañana; si no, se deja en paz*
+
+**Síntoma en consola (máquina de desarrollo, tras varios ciclos):** el CLI imprime conexión a DB y `DeviceProps`, logs `[neonize-dart] FINE/INFO` correctos, **no** aparece línea de “QR recibido” ni el bloque “Escanea este QR…”, y el nativo reporta `Login event: timeout` y a veces `Press Ctrl+C to exit` (este último **proviene del binario Go** en el `.dll`, no del Dart del taller). **No es un bucle lógico del código Dart** si el callback FFI del QR nunca se invoca: el fallo queda en **cadena nativa (Neonize/whatsmeow) / red / sesión** antes de generar o entregar el QR.
+
+**Qué ya se probó / instrumentó en repo:**
+
+- Carga de librería sin `NEONIZE_PATH` si el `.dll` está en el directorio de trabajo; logs Dart activables con `NEONIZE_LOG_LEVEL=DEBUG` (p. ej. se ven `Registering callback`, ruta de `neonize.db`, `DeviceProps`).
+- `DeviceProps` en el CLI del taller: **`platformType=CHROME`** por defecto (más alineado a “Dispositivos vinculados” que el `SAFARI` implícito de Neonize); se puede forzar con `NEONIZE_DEVICE_PLATFORM=SAFARI|CHROME|EDGE|DESKTOP`.
+- Mensaje explícito en `onLogginStatus` (parche en `third_party/neonize`) si el estado contiene `timeout`, y aviso en consola antes de `connect()`.
+- Cierre: si tras borrar `data/` y sin `dart.exe` bloqueando archivos el problema continúa, **aparcar** el emparejamiento Neonize en esa máquina y seguir con **Node/Baileys** o **Cloud API** en el producto, sin forzar más el mismo bucle.
+
+**Posible plan “última vuelta” (mañana, checklist):**
+
+1. Cerrar **todos** los `dart.exe` / IDEs que tengan el CLI colgado; borrar **toda** la carpeta `data/` (o al menos `neonize.db` + `temp/`), no solo un archivo a medias.
+2. Comprobar **misma red** que permita WhatsApp (sin VPN agresivo, sin proxy corporativo que corte wss, firewall que permita el cliente).
+3. Re-descargar el `.dll` del **mismo tag** documentado (p. ej. `0.3.16.post0` en `krypton-byte/neonize` releases) y **sustituir** el archivo local por si el binario estuvo corrupto o mezclado.
+4. Probar `NEONIZE_DEVICE_PLATFORM=EDGE` (o vuelta a `SAFARI`) por si el dispositivo simulado importa con la build actual de WhatsApp.
+5. **Aislar la máquina:** en el **mismo PC**, arrancar el demo **Node** `whatsapp-bot-baileys` (QR Baileys). Si ahí el QR **sí** sale, el bloqueo es **específico de Neonize/FFI**; si tampoco sale, apunta más a **red/cuenta/entorno**.
+6. Si sigue el timeout: **cierre** de la línea Neonize en local para este taller; dejar el código documentado y continuar producto con otra pila aprobada.
+
+**Commits (inglés) asociados a esta fase (orden sugerido en `git log`):**
+
+1. `fix(neonize): add stderr hints when login status reports timeout`
+2. `feat(dart): wire NEONIZE_LOG_LEVEL to Dart root logging in QR CLI`
+3. `feat(dart): use CHROME DeviceProps and log pairing metadata for workshop CLI`
+4. `docs: document Neonize QR timeout incident and last-resort checklist`
 
 ### D) `Flutter/whatsapp_wa_drago` — Drago (whatsapp-web.js + InAppWebView) — *exploración abr. 2026*
 
@@ -144,7 +172,7 @@
 
 ## Retomar la siguiente sesión — empieza aquí (abril 2026)
 
-**Estado al cierre de hoy (sesión en curso):** el demo Dart **ya arranca y muestra QR** (más abajo, incidentes y arreglos). Queda **completar en tu máquina** el flujo: escanear QR → probar `ping` / mensaje de texto → desconectar con **Enter** (ver “Continuamos mañana”).
+**Estado al cierre de hoy (sesión en curso):** el demo Dart **arranca, carga el `.dll` y registra logs**; en al menos un entorno de prueba el flujo de **emparejamiento vía QR no completó** (`Login event: timeout` **sin** callback de QR). Ver *Incidente: timeout sin entrega de QR* en la sección Dart. Queda **reintentar** con el checklist allí; si no hay QR estable, **aparcar** Neonize en esa máquina y seguir con Baileys/Cloud API.
 
 ### Qué hicimos en esta ronda (resumen operativo)
 
