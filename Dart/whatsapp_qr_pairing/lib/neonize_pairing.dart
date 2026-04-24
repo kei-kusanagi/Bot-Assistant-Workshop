@@ -4,6 +4,29 @@ import 'package:neonize/neonize.dart';
 import 'package:path/path.dart' as p;
 import 'package:qr/qr.dart' as qr_pkg;
 
+DeviceProps_PlatformType _platformTypeFromEnv() {
+  final raw =
+      Platform.environment['NEONIZE_DEVICE_PLATFORM']?.trim().toUpperCase();
+  switch (raw) {
+    case 'SAFARI':
+      return DeviceProps_PlatformType.SAFARI;
+    case 'EDGE':
+      return DeviceProps_PlatformType.EDGE;
+    case 'DESKTOP':
+      return DeviceProps_PlatformType.DESKTOP;
+    case 'CHROME':
+    case '':
+    case null:
+      return DeviceProps_PlatformType.CHROME;
+    default:
+      stderr.writeln(
+        'NEONIZE_DEVICE_PLATFORM desconocido "$raw"; usando CHROME. '
+        'Valores: CHROME, SAFARI, EDGE, DESKTOP.',
+      );
+      return DeviceProps_PlatformType.CHROME;
+  }
+}
+
 /// `neonize.qrTerminal` usa ANSI (fondo negro/blanco); en consolas Windows / Cursor
 /// a veces no se ve nada. Este dibujo usa caracteres UTF-8 y suele verse siempre.
 void _writeQrAscii(String qrData) {
@@ -55,12 +78,24 @@ void runQrPairing({required Directory workingDirectory}) {
   }
   final dbPath = p.join(dataRoot.path, 'neonize.db');
 
+  final platform = _platformTypeFromEnv();
   final client = NewAClient(
     name: 'workshop-dart-qr',
     config: Config(tempPath: tempDir.path, databasePath: dbPath),
+    deviceProps: DeviceProps(
+      os: Platform.operatingSystem,
+      platformType: platform,
+    ),
+  );
+  log.info(
+    'DeviceProps: os=${Platform.operatingSystem}, platformType=$platform '
+    '(cambia con NEONIZE_DEVICE_PLATFORM=SAFARI|CHROME|EDGE|DESKTOP)',
   );
 
   client.qr((String qrData) {
+    log.info(
+      'QR de emparejamiento recibido (${qrData.length} caracteres).',
+    );
     stdout.writeln('');
     stdout.writeln(
       'Escanea este QR con WhatsApp (Ajustes > Dispositivos vinculados):',
@@ -97,6 +132,11 @@ void runQrPairing({required Directory workingDirectory}) {
   });
 
   stdout.writeln('Iniciando cliente Neonize...');
+  stdout.writeln(
+    '(Si ves "Login event: timeout", no es un bucle del codigo: el QR no se '
+    'completo a tiempo o hay red/archivos bloqueados; borra data/ con dart.exe '
+    'cerrado y usa NEONIZE_LOG_LEVEL=DEBUG para ver eventos FFI en consola.)',
+  );
   client.connect();
 
   stdout.writeln('Proceso activo. Pulsa Enter para desconectar y salir.');
