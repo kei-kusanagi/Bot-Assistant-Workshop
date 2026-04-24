@@ -23,9 +23,36 @@ import 'structs.dart';
 
 // final gocode = ffi.DynamicLibrary.open('/home/krypton-byte/dart/neonize/gox/neonize_lib.so');
 
-final gocode = ffi.DynamicLibrary.open(
-  Platform.environment['NEONIZE_PATH']??'neonize-linux-amd64.so',
-);
+String _neonizeLibraryPath() {
+  final fromEnv = Platform.environment['NEONIZE_PATH']?.trim();
+  if (fromEnv != null && fromEnv.isNotEmpty) {
+    return fromEnv;
+  }
+  if (Platform.isWindows) {
+    for (final name in [
+      'neonize-windows-amd64.dll',
+      'neonize-windows-arm64.dll',
+      'neonize-windows-386.dll',
+    ]) {
+      if (File(name).existsSync()) {
+        return File(name).absolute.path;
+      }
+    }
+    return 'neonize-windows-amd64.dll';
+  }
+  if (Platform.isMacOS) {
+    if (File('libneonize.dylib').existsSync()) {
+      return File('libneonize.dylib').absolute.path;
+    }
+    return 'libneonize.dylib';
+  }
+  if (File('libneonize.so').existsSync()) {
+    return File('libneonize.so').absolute.path;
+  }
+  return 'neonize-linux-amd64.so';
+}
+
+final gocode = ffi.DynamicLibrary.open(_neonizeLibraryPath());
 // final GetVersion getVersion = gocode
 //     .lookup<ffi.NativeFunction<GetVersionFunc>>('GetVersion')
 //     .asFunction();
