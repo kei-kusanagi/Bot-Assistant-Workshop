@@ -1,5 +1,5 @@
-import 'dart:async';
 import 'dart:ffi';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'package:protobuf/protobuf.dart' as pb;
@@ -61,7 +61,20 @@ class Event {
   }
 
   void onLogginStatus(Pointer<Char> uuid, Pointer<Char> data) {
-    print(data.cast<Utf8>().toDartString());
+    final status = data.cast<Utf8>().toDartString();
+    stdout.writeln(status);
+    if (status.toLowerCase().contains('timeout')) {
+      stderr.writeln('');
+      stderr.writeln(
+        'Neonize: el intento de login caduco (no se completo el QR a tiempo o fallo la conexion).',
+      );
+      stderr.writeln(
+        '  Cierra otros dart.exe, borra la carpeta data/ del proyecto, revisa red/VPN y reintenta.',
+      );
+      stderr.writeln(
+        '  Para mas detalle en Dart: NEONIZE_LOG_LEVEL=DEBUG (y revisa tambien la salida nativa).',
+      );
+    }
   }
 
   void blockingFunctionCallback(Pointer<Char> uuid, bool data) {
