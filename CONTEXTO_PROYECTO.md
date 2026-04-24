@@ -101,6 +101,9 @@
   5. `docs(dart): add Baileys migration log and Dart workspace index`
   6. `chore(dart): add docker-compose with Ollama sidecar`
   7. `docs(dart): document semantic commit convention and mission history`
+- **Commits posteriores (auto-descubrimiento Neonize, abr. 2026):**
+  8. `fix(neonize): resolve native library path when NEONIZE_PATH is unset`
+  9. `feat(dart): auto-discover Neonize DLL and clarify whatsapp_qr_pairing entry`
 - **Guía de convención (inglés):** `Dart/docs/SEMANTIC_COMMITS.md` — prefijos `feat` / `fix` / `docs` / `build` / `chore` y la tabla anterior para explicar al equipo o al jefe cómo se nombraron los commits.
 - **Git / push:** si en algún momento se habían subido al remoto **los 3 commits viejos** de Dart (antes de la reorganización), el historial local **diverge**; puede hacer falta **`git push --force-with-lease`** (solo si nadie más depende de esos SHAs) o coordinar. Si **nunca** se subieron esos tres, un `git push` normal alinea el remoto con estos siete commits.
 - **Ollama:** instalar desde https://ollama.com o usar el servicio del compose; **aún no** integrado en la lógica del bot (preparación para modelos locales / asistente después).
