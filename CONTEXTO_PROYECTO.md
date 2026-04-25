@@ -137,6 +137,37 @@
 3. `feat(dart): use CHROME DeviceProps and log pairing metadata for workshop CLI`
 4. `docs: document Neonize QR timeout incident and last-resort checklist`
 
+### C2) `Dart2/whatsapp_web_puppeteer` — migración funcional QR a Dart (Puppeteer + WhatsApp Web) — *abr. 2026*
+
+**Motivo:** el camino `Dart/whatsapp_qr_pairing` con **Neonize/FFI** cargaba la `.dll`, pero quedaba en `Login event: timeout` **sin callback de QR**. Para no seguir repitiendo el mismo bucle, se creó una ruta separada **`Dart2/`** con otro motor.
+
+**Enfoque:** Dart puro de consola con **`whatsapp_bot_flutter` + Puppeteer/Chromium + WA-JS**, sin `.dll` Neonize. Abre una instancia de Chrome controlada por Dart, muestra/vincula WhatsApp Web por QR, guarda sesión en `data/whatsapp-session/` y cachea Chromium en `.local-chromium/`.
+
+**Código / docs:**
+
+- Proyecto: `Dart2/whatsapp_web_puppeteer`
+- Guía técnica: `Dart2/DOCS/MIGRATION_FROM_NODE_BAILEYS.md`
+- Entrada CLI: `Dart2/whatsapp_web_puppeteer/bin/whatsapp_web_puppeteer.dart`
+
+**Resultado validado en sesión:** el QR se vinculó, Chrome abrió WhatsApp Web, la terminal llegó a `[conn] connected`, se recibió un mensaje real desde otro número (`[RX] ...@lid: ping`) y, tras corregir envío a chats `@lid`, el usuario confirmó que **sí respondió**.
+
+**Cambios clave del Dart2:**
+
+- El proceso queda vivo hasta **Ctrl+C** (evita que Chrome quede abierto pero Dart ya no escuche).
+- Listener `WhatsappEvent.chatNewMessage`.
+- Respuesta demo: **`ping` → `pong`** y resto de texto `Recibido: ...`.
+- Fix importante: si el remitente viene como **`@lid`**, no se usa el helper `sendTextMessage` del paquete porque intenta convertirlo a `@c.us`; se manda directo con `WPP.chat.sendTextMessage(...)` usando el identificador crudo.
+
+**Comandos:**
+
+```powershell
+cd "c:\Users\admin\Desktop\Proyectos\Bot Assistant Workshop\Dart2\whatsapp_web_puppeteer"
+dart pub get
+dart run
+```
+
+**Conclusión práctica:** esto cumple mejor la intención original del jefe de migrar a Dart la parte de **QR + vincular WhatsApp + responder mensajes**, aunque no es una traducción línea por línea de Baileys (Baileys no existe en Dart). Es una **migración funcional** usando otro motor Dart.
+
 ### D) `Flutter/whatsapp_wa_drago` — Drago (whatsapp-web.js + InAppWebView) — *exploración abr. 2026*
 
 **Motivo:** probar la ruta “Dart obligatorio + UI” con el paquete **`drago_whatsapp_flutter`** (WPP inyectado en un WebView), como alternativa al CLI **Neonize**.
