@@ -64,6 +64,82 @@
 
 ---
 
+## Entorno local — NanoClaw / Claude Code en Windows + WSL + Rancher Desktop (abr. 2026)
+
+**Objetivo:** instalar/correr **NanoClaw** desde **Ubuntu en WSL2** usando **Rancher Desktop** como runtime Docker en Windows 10.
+
+**Problema inicial:** `bash nanoclaw.sh` fallaba al preparar el sandbox con:
+
+- `Docker not running — attempting to start platform="linux"`
+- `Failed to start docker.service: Unit docker.service not found.`
+- `ERROR: runtime_not_available`
+
+**Diagnóstico:** no era la contraseña de `sudo`. En WSL no existía `docker.service` como servicio normal de Linux; Docker debía venir del runtime de Rancher Desktop. Además:
+
+- Rancher Desktop primero estaba trabado: la UI abría, pero `rancher-desktop` aparecía `Stopped` en `wsl -l -v`.
+- `docker version` en Windows llegó a fallar con `open //./pipe/docker_engine: The system cannot find the file specified`.
+- Tras reinstalar Rancher Desktop, el daemon sí levantó, pero Ubuntu no tenía el comando `docker` en PATH.
+- El socket correcto expuesto por Rancher para WSL fue: `/mnt/wsl/rancher-desktop/run/docker.sock`.
+
+**Configuración que terminó funcionando en Rancher Desktop:**
+
+- **Container Engine:** `dockerd (moby)`.
+- **Kubernetes:** desactivado para esta prueba.
+- **WSL Integration:** `Ubuntu` activado.
+- Rancher Desktop reinstalado cuando quedó en estado inconsistente.
+
+**Comprobaciones útiles:**
+
+```powershell
+wsl -l -v
+```
+
+Debe mostrar `rancher-desktop` en `Running`.
+
+```powershell
+"C:\Program Files\Rancher Desktop\resources\resources\win32\bin\docker.exe" version
+```
+
+Debe mostrar `Client` y `Server`.
+
+En Ubuntu/WSL, con el binario de Rancher:
+
+```bash
+DOCKER_HOST=unix:///mnt/wsl/rancher-desktop/run/docker.sock \
+  "/mnt/c/Program Files/Rancher Desktop/resources/resources/linux/bin/docker" ps
+```
+
+**Ajuste local aplicado en Ubuntu:** se creó un wrapper en:
+
+```bash
+~/.local/bin/docker
+```
+
+para que `docker` use el binario de Rancher y el socket correcto. También se dejó `~/.local/bin` disponible en el PATH de la shell. La prueba final `docker ps` respondió correctamente desde Ubuntu.
+
+**Resultado con NanoClaw:** al volver a correr:
+
+```bash
+cd ~/nanoclaw-v2
+bash nanoclaw.sh
+```
+
+NanoClaw ya pudo preparar el sandbox. Llegó a:
+
+- `Sandbox ready`
+- `OneCLI vault ready`
+- pantalla para conectar con Claude.
+
+**Conclusión sobre Claude / Anthropic:** para usar NanoClaw/Claude Code de forma real parece necesario **pagar** o tener credenciales de una cuenta con acceso:
+
+- **Claude Pro/Max**: opción recomendada por NanoClaw si ya existe suscripción.
+- **Anthropic API key**: requiere cuenta en Anthropic Console y normalmente método de pago / crédito de uso.
+- La cuenta gratuita de Claude puede servir para la web, pero no parece suficiente para conectar NanoClaw si pide suscripción o API key.
+
+**Pendiente / decisión:** preguntar al jefe si ya existe cuenta corporativa de Claude/Anthropic o presupuesto para API key. Técnicamente Docker/Rancher/NanoClaw ya quedaron resueltos; el bloqueo restante es **credencial/costo**.
+
+---
+
 ## Avances técnicos — bots WhatsApp (dos enfoques en el repo)
 
 ### A) `node/whatsapp-bot-demo` — WhatsApp Cloud API (Meta)
