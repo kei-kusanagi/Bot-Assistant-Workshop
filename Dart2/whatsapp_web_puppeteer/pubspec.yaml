@@ -8,6 +8,7 @@ environment:
 
 # Add regular dependencies here.
 dependencies:
+  http: ^1.6.0
   path: ^1.9.1
   qr: ^3.0.2
   whatsapp_bot_flutter: ^2.1.2
