@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 import 'package:qr/qr.dart' as qr_pkg;
 import 'package:whatsapp_bot_flutter/whatsapp_bot_flutter.dart';
+import 'package:whatsapp_web_puppeteer/ai/ai_service.dart';
+import 'package:whatsapp_web_puppeteer/ai/providers/ollama_provider.dart';
 
 Future<void> main(List<String> arguments) async {
   WhatsappBotUtils.enableLogs(_envFlag('WPP_VERBOSE_LOGS'));
@@ -20,18 +22,30 @@ Future<void> main(List<String> arguments) async {
 
   final headless = _envFlag('HEADLESS_CHROME');
   final phoneLink = Platform.environment['WHATSAPP_LINK_PHONE']?.trim();
+  final ollamaBaseUrl = Uri.parse(
+    Platform.environment['OLLAMA_BASE_URL'] ?? 'http://localhost:11434',
+  );
+  final ollamaModel = Platform.environment['OLLAMA_MODEL'] ?? 'llama3.2:3b';
+  final aiService = AIService(
+    provider: OllamaProvider(baseUrl: ollamaBaseUrl, model: ollamaModel),
+  );
+  final handledMessageIds = <String>{};
   WhatsappClient? client;
+  Timer? pollingTimer;
 
   stdout.writeln('Dart2 WhatsApp Web bot (Puppeteer + WA-JS)');
   stdout.writeln('Sesion: ${sessionDir.path}');
   stdout.writeln('Chromium cache: ${chromeDir.path}');
+  stdout.writeln('AI provider: Ollama ($ollamaBaseUrl), model: $ollamaModel');
   stdout.writeln(
     headless
         ? 'Chrome abrira en modo headless; usa el QR de consola/archivo.'
         : 'Chrome abrira visible; escanea el QR de esa ventana si aparece.',
   );
   if (phoneLink != null && phoneLink.isNotEmpty) {
-    stdout.writeln('Vinculacion por codigo telefonico activada para $phoneLink.');
+    stdout.writeln(
+      'Vinculacion por codigo telefonico activada para $phoneLink.',
+    );
   }
   stdout.writeln('');
 
@@ -40,8 +54,9 @@ Future<void> main(List<String> arguments) async {
       sessionDirectory: sessionDir.path,
       chromiumDownloadDirectory: chromeDir.path,
       headless: headless,
-      linkWithPhoneNumber:
-          phoneLink == null || phoneLink.isEmpty ? null : phoneLink,
+      linkWithPhoneNumber: phoneLink == null || phoneLink.isEmpty
+          ? null
+          : phoneLink,
       qrCodeWaitDurationSeconds: 180,
       connectionTimeout: const Duration(seconds: 60),
       wppInitTimeout: const Duration(seconds: 45),
@@ -54,7 +69,9 @@ Future<void> main(List<String> arguments) async {
       ],
       chromeDownloadProgress: (received, total) {
         if (total <= 0) return;
-        final percent = (received * 100 / total).clamp(0, 100).toStringAsFixed(0);
+        final percent = (received * 100 / total)
+            .clamp(0, 100)
+            .toStringAsFixed(0);
         stdout.write('\rDescargando Chromium: $percent%');
         if (received >= total) stdout.writeln('');
       },
@@ -71,7 +88,9 @@ Future<void> main(List<String> arguments) async {
       },
       onQrCode: (qr, imageBytes) async {
         stdout.writeln('');
-        stdout.writeln('QR recibido. Escanealo con WhatsApp > Dispositivos vinculados.');
+        stdout.writeln(
+          'QR recibido. Escanealo con WhatsApp > Dispositivos vinculados.',
+        );
         if (imageBytes != null) {
           final out = File(p.join(dataDir.path, 'last_qr.png'));
           await out.writeAsBytes(_pngBytes(imageBytes));
@@ -94,13 +113,20 @@ Future<void> main(List<String> arguments) async {
 
     stdout.writeln('Cliente creado. Registrando listener de mensajes...');
     await client.on(WhatsappEvent.chatNewMessage, (data) {
-      unawaited(_handleIncoming(client!, data));
+      unawaited(_handleIncoming(client!, aiService, data, handledMessageIds));
     });
+    pollingTimer = _startMessagePolling(client, aiService, handledMessageIds);
 
     stdout.writeln('');
-    stdout.writeln('Bot activo. Desde otro numero escribe al WhatsApp vinculado.');
-    stdout.writeln('Prueba: "ping" -> "pong"; cualquier texto -> "Recibido: ...".');
-    stdout.writeln('Deja esta terminal abierta. Pulsa Ctrl+C para cerrar Chrome y salir.');
+    stdout.writeln(
+      'Bot activo. Desde otro numero escribe al WhatsApp vinculado.',
+    );
+    stdout.writeln(
+      'Las respuestas ahora salen de Ollama, no de if/else fijos.',
+    );
+    stdout.writeln(
+      'Deja esta terminal abierta. Pulsa Ctrl+C para cerrar Chrome y salir.',
+    );
     await _waitUntilInterrupted();
   } catch (error, stackTrace) {
     stderr.writeln('');
@@ -110,6 +136,7 @@ Future<void> main(List<String> arguments) async {
     }
     exitCode = 1;
   } finally {
+    pollingTimer?.cancel();
     await client?.disconnect();
   }
 }
@@ -126,7 +153,12 @@ Future<void> _waitUntilInterrupted() async {
   await done.future;
 }
 
-Future<void> _handleIncoming(WhatsappClient client, dynamic data) async {
+Future<void> _handleIncoming(
+  WhatsappClient client,
+  AIService aiService,
+  dynamic data,
+  Set<String> handledMessageIds,
+) async {
   final messages = Message.parse(data);
   for (final message in messages) {
     final id = message.id;
@@ -135,16 +167,119 @@ Future<void> _handleIncoming(WhatsappClient client, dynamic data) async {
     final from = message.from;
     final body = (message.body ?? message.caption ?? '').trim();
     if (from == null || from.isEmpty || body.isEmpty) continue;
+    if (!_markMessageAsNew(
+      message.id?.serialized ?? message.id?.id,
+      handledMessageIds,
+    )) {
+      continue;
+    }
 
     stdout.writeln('[RX] $from: $body');
-    final reply = body.toLowerCase() == 'ping' ? 'pong' : 'Recibido: $body';
 
-    try {
-      await _sendReply(client, to: from, message: reply, replyMessageId: id);
-      stdout.writeln('[TX] $from: $reply');
-    } catch (error) {
-      stderr.writeln('[TX-ERROR] No pude responder a $from: $error');
+    await _generateAndSendReply(
+      client,
+      aiService,
+      to: from,
+      body: body,
+      id: id,
+    );
+  }
+}
+
+Timer _startMessagePolling(
+  WhatsappClient client,
+  AIService aiService,
+  Set<String> handledMessageIds,
+) {
+  return Timer.periodic(const Duration(seconds: 3), (_) {
+    unawaited(_pollUnreadMessages(client, aiService, handledMessageIds));
+  });
+}
+
+Future<void> _pollUnreadMessages(
+  WhatsappClient client,
+  AIService aiService,
+  Set<String> handledMessageIds,
+) async {
+  try {
+    final raw = await client.wpClient.evaluateJs(
+      r'''WPP.chat.list({ onlyUsers: true }).then((chats) => chats
+        .filter((chat) => (chat.unreadCount || 0) > 0)
+        .slice(0, 10)
+        .map((chat) => {
+          id: chat.id?._serialized || chat.id,
+          messages: (chat.msgs || [])
+            .slice(-5)
+            .map((msg) => ({
+              id: msg.id?._serialized || msg.id?.id || msg.id,
+              fromMe: !!msg.id?.fromMe,
+              from: msg.from?._serialized || msg.from || chat.id?._serialized || chat.id,
+              body: msg.body || msg.caption || '',
+              t: msg.t || 0
+            }))
+        }))''',
+      methodName: 'pollUnreadMessages',
+      forceJsonParseResult: true,
+    );
+    if (raw is! List) return;
+
+    for (final chat in raw) {
+      if (chat is! Map) continue;
+      final messages = chat['messages'];
+      if (messages is! List) continue;
+
+      for (final rawMessage in messages) {
+        if (rawMessage is! Map) continue;
+        if (rawMessage['fromMe'] == true) continue;
+
+        final id = rawMessage['id']?.toString();
+        if (!_markMessageAsNew(id, handledMessageIds)) continue;
+
+        final from = rawMessage['from']?.toString() ?? chat['id']?.toString();
+        final body = rawMessage['body']?.toString().trim() ?? '';
+        if (from == null || from.isEmpty || body.isEmpty) continue;
+
+        stdout.writeln('[RX/poll] $from: $body');
+        await _generateAndSendReply(client, aiService, to: from, body: body);
+      }
     }
+  } catch (error) {
+    if (_envFlag('DART2_DEBUG_POLLING')) {
+      stderr.writeln('[poll-error] $error');
+    }
+  }
+}
+
+bool _markMessageAsNew(String? id, Set<String> handledMessageIds) {
+  if (id == null || id.isEmpty) return true;
+  if (handledMessageIds.contains(id)) return false;
+  handledMessageIds.add(id);
+  if (handledMessageIds.length > 500) {
+    handledMessageIds.remove(handledMessageIds.first);
+  }
+  return true;
+}
+
+Future<void> _generateAndSendReply(
+  WhatsappClient client,
+  AIService aiService, {
+  required String to,
+  required String body,
+  MessageId? id,
+}) async {
+  try {
+    final reply = await aiService.getResponse(body);
+    await _sendReply(client, to: to, message: reply, replyMessageId: id);
+    stdout.writeln('[TX] $to: $reply');
+  } catch (error) {
+    stderr.writeln('[TX-ERROR] No pude responder a $to: $error');
+    await _sendReply(
+      client,
+      to: to,
+      message:
+          'Por ahora no pude consultar la IA local. Revisa que Ollama este corriendo y que el modelo este instalado.',
+      replyMessageId: id,
+    );
   }
 }
 
