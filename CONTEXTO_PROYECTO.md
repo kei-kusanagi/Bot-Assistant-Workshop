@@ -244,6 +244,30 @@ dart run
 
 **Conclusión práctica:** esto cumple mejor la intención original del jefe de migrar a Dart la parte de **QR + vincular WhatsApp + responder mensajes**, aunque no es una traducción línea por línea de Baileys (Baileys no existe en Dart). Es una **migración funcional** usando otro motor Dart.
 
+### C3) IA modular tipo NanoClaw aplicada en Dart2 — *abr. 2026*
+
+**Nueva indicación del jefe:** no se trataba de migrar NanoClaw literal, sino de **tomar el enfoque y aplicarlo**: una arquitectura genérica para conectar distintos modelos/proveedores al bot, usando **Dart y su sistema de paquetes**, no npm. Ollama encaja como primer proveedor local; después se podrían agregar OpenAI/Anthropic/etc.
+
+**Implementación inicial en `Dart2/whatsapp_web_puppeteer`:**
+
+- `lib/ai/ai_provider.dart`: contrato abstracto `AIProvider` con `Future<String> generateResponse(String prompt)`.
+- `lib/ai/providers/ollama_provider.dart`: proveedor HTTP contra **Ollama local** (`http://localhost:11434`, endpoint `/api/generate`, `stream: false`).
+- `lib/ai/ai_service.dart`: capa que recibe un `AIProvider`, construye un prompt de sistema simple para asistente de citas y expone `getResponse(message)`.
+- `bin/whatsapp_web_puppeteer.dart`: reemplaza la respuesta fija `ping -> pong` / `Recibido: ...` por respuesta generada desde `AIService`.
+- Respaldo de recepción: además de `WhatsappEvent.chatNewMessage`, se agregó **polling cada 3s** de chats no leídos porque en una corrida WhatsApp quedó `[conn] connected` pero no emitió `[RX]` al llegar un mensaje. Si el respaldo detecta mensajes, imprime `[RX/poll]`.
+
+**Configuración por entorno:**
+
+```powershell
+$env:OLLAMA_BASE_URL="http://localhost:11434"
+$env:OLLAMA_MODEL="llama3.2:3b"
+dart run
+```
+
+**Doc técnica:** `Dart2/DOCS/AI_ADAPTER_ARCHITECTURE.md`.
+
+**Validación parcial:** `ollama pull llama3.2:3b` descargó el modelo y el bot conectó a WhatsApp (`[conn] connected`). En la primera prueba de IA no apareció `[RX]`, por lo que se agregó el respaldo por polling. Siguiente validación: reiniciar el bot y confirmar que al enviar mensaje aparece `[RX]` o `[RX/poll]`, y que la respuesta sale de Ollama.
+
 ### D) `Flutter/whatsapp_wa_drago` — Drago (whatsapp-web.js + InAppWebView) — *exploración abr. 2026*
 
 **Motivo:** probar la ruta “Dart obligatorio + UI” con el paquete **`drago_whatsapp_flutter`** (WPP inyectado en un WebView), como alternativa al CLI **Neonize**.
