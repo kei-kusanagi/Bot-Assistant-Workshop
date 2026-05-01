@@ -265,6 +265,7 @@ dart run
 ```
 
 **Doc técnica:** `Dart2/DOCS/AI_ADAPTER_ARCHITECTURE.md`.
+**Diagrama para explicar al jefe:** `Dart2/DOCS/AI_WHATSAPP_FLOW_DIAGRAM.md`.
 
 **Validación parcial:** `ollama pull llama3.2:3b` descargó el modelo y el bot conectó a WhatsApp (`[conn] connected`). En la primera prueba de IA no apareció `[RX]`, por lo que se agregó el respaldo por polling. Siguiente validación: reiniciar el bot y confirmar que al enviar mensaje aparece `[RX]` o `[RX/poll]`, y que la respuesta sale de Ollama.
 
