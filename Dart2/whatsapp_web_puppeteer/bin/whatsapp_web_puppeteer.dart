@@ -8,6 +8,9 @@ import 'package:qr/qr.dart' as qr_pkg;
 import 'package:whatsapp_bot_flutter/whatsapp_bot_flutter.dart';
 import 'package:whatsapp_web_puppeteer/ai/ai_service.dart';
 import 'package:whatsapp_web_puppeteer/ai/providers/ollama_provider.dart';
+import 'package:whatsapp_web_puppeteer/storage/local_conversation_store.dart';
+
+enum _BotRunSignal { stop, reconnect }
 
 Future<void> main(List<String> arguments) async {
   WhatsappBotUtils.enableLogs(_envFlag('WPP_VERBOSE_LOGS'));
@@ -16,7 +19,11 @@ Future<void> main(List<String> arguments) async {
   final dataDir = Directory(p.join(cwd.path, 'data'));
   final chromeDir = Directory(p.join(cwd.path, '.local-chromium'));
   final sessionDir = Directory(p.join(dataDir.path, 'whatsapp-session'));
-  for (final dir in [dataDir, chromeDir, sessionDir]) {
+  final storeDir = Directory(p.join(dataDir.path, 'store'));
+  final businessProfileFile = File(
+    p.join(dataDir.path, 'business_profile.json'),
+  );
+  for (final dir in [dataDir, chromeDir, sessionDir, storeDir]) {
     if (!dir.existsSync()) dir.createSync(recursive: true);
   }
 
@@ -29,13 +36,16 @@ Future<void> main(List<String> arguments) async {
   final aiService = AIService(
     provider: OllamaProvider(baseUrl: ollamaBaseUrl, model: ollamaModel),
   );
-  final handledMessageIds = <String>{};
-  WhatsappClient? client;
-  Timer? pollingTimer;
-
+  final conversationStore = LocalConversationStore(
+    storeDirectory: storeDir,
+    businessProfileFile: businessProfileFile,
+  );
+  await conversationStore.ensureReady();
   stdout.writeln('Dart2 WhatsApp Web bot (Puppeteer + WA-JS)');
   stdout.writeln('Sesion: ${sessionDir.path}');
   stdout.writeln('Chromium cache: ${chromeDir.path}');
+  stdout.writeln('Memoria local: ${storeDir.path}');
+  stdout.writeln('Perfil del negocio: ${businessProfileFile.path}');
   stdout.writeln('AI provider: Ollama ($ollamaBaseUrl), model: $ollamaModel');
   stdout.writeln(
     headless
@@ -48,6 +58,61 @@ Future<void> main(List<String> arguments) async {
     );
   }
   stdout.writeln('');
+
+  final stopSignal = Completer<void>();
+  late final StreamSubscription<ProcessSignal> sigintSub;
+  sigintSub = ProcessSignal.sigint.watch().listen((_) {
+    stdout.writeln('');
+    stdout.writeln('Cerrando bot...');
+    if (!stopSignal.isCompleted) stopSignal.complete();
+  });
+
+  try {
+    while (!stopSignal.isCompleted) {
+      final signal = await _runBotSession(
+        dataDir: dataDir,
+        chromeDir: chromeDir,
+        sessionDir: sessionDir,
+        headless: headless,
+        phoneLink: phoneLink,
+        aiService: aiService,
+        conversationStore: conversationStore,
+        stopSignal: stopSignal.future,
+      );
+
+      if (signal == _BotRunSignal.stop || stopSignal.isCompleted) break;
+
+      stderr.writeln('[reconnect] Reintentando conexion en 5 segundos...');
+      await Future.any([
+        Future<void>.delayed(const Duration(seconds: 5)),
+        stopSignal.future,
+      ]);
+    }
+  } finally {
+    await sigintSub.cancel();
+  }
+}
+
+Future<_BotRunSignal> _runBotSession({
+  required Directory dataDir,
+  required Directory chromeDir,
+  required Directory sessionDir,
+  required bool headless,
+  required String? phoneLink,
+  required AIService aiService,
+  required LocalConversationStore conversationStore,
+  required Future<void> stopSignal,
+}) async {
+  final handledMessageIds = <String>{};
+  final sessionSignal = Completer<_BotRunSignal>();
+  WhatsappClient? client;
+  Timer? pollingTimer;
+
+  void requestReconnect(Object error) {
+    if (sessionSignal.isCompleted) return;
+    stderr.writeln('[reconnect] La sesion de Chrome se cerro: $error');
+    sessionSignal.complete(_BotRunSignal.reconnect);
+  }
 
   try {
     client = await WhatsappBotFlutter.connect(
@@ -108,14 +173,34 @@ Future<void> main(List<String> arguments) async {
     if (client == null) {
       stderr.writeln('No se pudo crear el cliente WhatsApp.');
       exitCode = 1;
-      return;
+      return _BotRunSignal.stop;
     }
 
     stdout.writeln('Cliente creado. Registrando listener de mensajes...');
     await client.on(WhatsappEvent.chatNewMessage, (data) {
-      unawaited(_handleIncoming(client!, aiService, data, handledMessageIds));
+      unawaited(
+        _handleIncoming(
+          client!,
+          aiService,
+          conversationStore,
+          data,
+          handledMessageIds,
+        ).catchError((Object error) {
+          if (_isBrowserSessionClosedError(error)) {
+            requestReconnect(error);
+            return;
+          }
+          stderr.writeln('[RX-ERROR] No pude procesar un mensaje: $error');
+        }),
+      );
     });
-    pollingTimer = _startMessagePolling(client, aiService, handledMessageIds);
+    pollingTimer = _startMessagePolling(
+      client,
+      aiService,
+      conversationStore,
+      handledMessageIds,
+      onFatalError: requestReconnect,
+    );
 
     stdout.writeln('');
     stdout.writeln(
@@ -127,35 +212,38 @@ Future<void> main(List<String> arguments) async {
     stdout.writeln(
       'Deja esta terminal abierta. Pulsa Ctrl+C para cerrar Chrome y salir.',
     );
-    await _waitUntilInterrupted();
+    final signal = await Future.any([
+      stopSignal.then((_) => _BotRunSignal.stop),
+      sessionSignal.future,
+    ]);
+    return signal;
   } catch (error, stackTrace) {
     stderr.writeln('');
     stderr.writeln('Error iniciando el bot: $error');
     if (_envFlag('DART2_DEBUG_STACK')) {
       stderr.writeln(stackTrace);
     }
+    if (_isBrowserSessionClosedError(error)) {
+      return _BotRunSignal.reconnect;
+    }
     exitCode = 1;
+    return _BotRunSignal.stop;
   } finally {
     pollingTimer?.cancel();
-    await client?.disconnect();
+    try {
+      await client?.disconnect();
+    } catch (error) {
+      if (_envFlag('DART2_DEBUG_STACK')) {
+        stderr.writeln('[disconnect-error] $error');
+      }
+    }
   }
-}
-
-Future<void> _waitUntilInterrupted() async {
-  final done = Completer<void>();
-  StreamSubscription<ProcessSignal>? sub;
-  sub = ProcessSignal.sigint.watch().listen((_) async {
-    stdout.writeln('');
-    stdout.writeln('Cerrando bot...');
-    await sub?.cancel();
-    if (!done.isCompleted) done.complete();
-  });
-  await done.future;
 }
 
 Future<void> _handleIncoming(
   WhatsappClient client,
   AIService aiService,
+  LocalConversationStore conversationStore,
   dynamic data,
   Set<String> handledMessageIds,
 ) async {
@@ -167,6 +255,10 @@ Future<void> _handleIncoming(
     final from = message.from;
     final body = (message.body ?? message.caption ?? '').trim();
     if (from == null || from.isEmpty || body.isEmpty) continue;
+    if (!_isSupportedIncomingChat(from)) {
+      stdout.writeln('[SKIP] Ignorando origen no soportado: $from');
+      continue;
+    }
     if (!_markMessageAsNew(
       message.id?.serialized ?? message.id?.id,
       handledMessageIds,
@@ -179,6 +271,7 @@ Future<void> _handleIncoming(
     await _generateAndSendReply(
       client,
       aiService,
+      conversationStore,
       to: from,
       body: body,
       id: id,
@@ -189,24 +282,41 @@ Future<void> _handleIncoming(
 Timer _startMessagePolling(
   WhatsappClient client,
   AIService aiService,
-  Set<String> handledMessageIds,
-) {
+  LocalConversationStore conversationStore,
+  Set<String> handledMessageIds, {
+  required void Function(Object error) onFatalError,
+}) {
+  var polling = false;
   return Timer.periodic(const Duration(seconds: 3), (_) {
-    unawaited(_pollUnreadMessages(client, aiService, handledMessageIds));
+    if (polling) return;
+    polling = true;
+    unawaited(
+      _pollUnreadMessages(
+        client,
+        aiService,
+        conversationStore,
+        handledMessageIds,
+        onFatalError: onFatalError,
+      ).whenComplete(() {
+        polling = false;
+      }),
+    );
   });
 }
 
 Future<void> _pollUnreadMessages(
   WhatsappClient client,
   AIService aiService,
-  Set<String> handledMessageIds,
-) async {
+  LocalConversationStore conversationStore,
+  Set<String> handledMessageIds, {
+  required void Function(Object error) onFatalError,
+}) async {
   try {
     final raw = await client.wpClient.evaluateJs(
       r'''WPP.chat.list({ onlyUsers: true }).then((chats) => chats
         .filter((chat) => (chat.unreadCount || 0) > 0)
         .slice(0, 10)
-        .map((chat) => {
+        .map((chat) => ({
           id: chat.id?._serialized || chat.id,
           messages: (chat.msgs || [])
             .slice(-5)
@@ -217,7 +327,7 @@ Future<void> _pollUnreadMessages(
               body: msg.body || msg.caption || '',
               t: msg.t || 0
             }))
-        }))''',
+        })))''',
       methodName: 'pollUnreadMessages',
       forceJsonParseResult: true,
     );
@@ -238,12 +348,26 @@ Future<void> _pollUnreadMessages(
         final from = rawMessage['from']?.toString() ?? chat['id']?.toString();
         final body = rawMessage['body']?.toString().trim() ?? '';
         if (from == null || from.isEmpty || body.isEmpty) continue;
+        if (!_isSupportedIncomingChat(from)) {
+          stdout.writeln('[SKIP/poll] Ignorando origen no soportado: $from');
+          continue;
+        }
 
         stdout.writeln('[RX/poll] $from: $body');
-        await _generateAndSendReply(client, aiService, to: from, body: body);
+        await _generateAndSendReply(
+          client,
+          aiService,
+          conversationStore,
+          to: from,
+          body: body,
+        );
       }
     }
   } catch (error) {
+    if (_isBrowserSessionClosedError(error)) {
+      onFatalError(error);
+      return;
+    }
     if (_envFlag('DART2_DEBUG_POLLING')) {
       stderr.writeln('[poll-error] $error');
     }
@@ -260,26 +384,75 @@ bool _markMessageAsNew(String? id, Set<String> handledMessageIds) {
   return true;
 }
 
+bool _isSupportedIncomingChat(String jid) {
+  if (jid.endsWith('@newsletter')) return false;
+  if (jid.endsWith('@g.us')) return false;
+  if (jid == 'status@broadcast' || jid.contains('broadcast')) return false;
+  return jid.endsWith('@lid') ||
+      jid.endsWith('@c.us') ||
+      jid.endsWith('@s.whatsapp.net');
+}
+
+bool _isBrowserSessionClosedError(Object error) {
+  final message = error.toString().toLowerCase();
+  return message.contains('session closed') ||
+      message.contains('page has been closed') ||
+      message.contains('target closed') ||
+      message.contains('browser has disconnected') ||
+      message.contains('websocket url not found');
+}
+
 Future<void> _generateAndSendReply(
   WhatsappClient client,
-  AIService aiService, {
+  AIService aiService,
+  LocalConversationStore conversationStore, {
   required String to,
   required String body,
   MessageId? id,
 }) async {
-  try {
-    final reply = await aiService.getResponse(body);
+  if (conversationStore.isIncomingMessageTooLong(body)) {
+    final reply =
+        'Recibi un mensaje demasiado largo para procesarlo completo. Puedes resumirme en pocas lineas que necesitas preguntar o agendar?';
+    await conversationStore.saveRejectedLongMessage(to, body);
     await _sendReply(client, to: to, message: reply, replyMessageId: id);
+    await conversationStore.saveAssistantMessage(to, reply);
+    stdout.writeln('[TX] $to: $reply');
+    return;
+  }
+
+  try {
+    await conversationStore.saveUserMessage(to, body);
+    final businessProfile = await conversationStore.loadBusinessProfile();
+    final conversationContext = await conversationStore.loadContext(to);
+    final reply = await aiService.getResponse(
+      body,
+      businessProfile: businessProfile,
+      conversationContext: conversationContext,
+    );
+    await _sendReply(client, to: to, message: reply, replyMessageId: id);
+    await conversationStore.saveAssistantMessage(to, reply);
     stdout.writeln('[TX] $to: $reply');
   } catch (error) {
+    if (_isBrowserSessionClosedError(error)) rethrow;
     stderr.writeln('[TX-ERROR] No pude responder a $to: $error');
-    await _sendReply(
-      client,
-      to: to,
-      message:
-          'Por ahora no pude consultar la IA local. Revisa que Ollama este corriendo y que el modelo este instalado.',
-      replyMessageId: id,
-    );
+    try {
+      await _sendReply(
+        client,
+        to: to,
+        message:
+            'Por ahora no pude consultar la IA local. Revisa que Ollama este corriendo y que el modelo este instalado.',
+        replyMessageId: id,
+      );
+      await conversationStore.saveAssistantMessage(
+        to,
+        'Por ahora no pude consultar la IA local. Revisa que Ollama este corriendo y que el modelo este instalado.',
+      );
+    } catch (fallbackError) {
+      if (_isBrowserSessionClosedError(fallbackError)) rethrow;
+      stderr.writeln(
+        '[TX-FALLBACK-ERROR] Tampoco pude enviar fallback a $to: $fallbackError',
+      );
+    }
   }
 }
 

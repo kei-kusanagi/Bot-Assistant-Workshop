@@ -1,0 +1,37 @@
+{
+  "businessName": "Nombre del negocio",
+  "businessType": "tipo de negocio",
+  "website": "https://ejemplo.com",
+  "services": [
+    "Consulta general",
+    "Limpieza dental"
+  ],
+  "servicePrices": {
+    "Consulta general": "Desde $500 MXN. Confirmar con el negocio.",
+    "Limpieza dental": "Desde $900 MXN. Confirmar con el negocio."
+  },
+  "schedule": "Lunes a viernes de 9:00 a 18:00",
+  "location": "Direccion publica del negocio",
+  "contact": "Telefono, WhatsApp o correo publico",
+  "assistantInstructions": [
+    "Actua como asistente cordial de recepcion del negocio.",
+    "Al iniciar una conversacion nueva, saluda amablemente y menciona el nombre del negocio solo si suena natural.",
+    "En mensajes de seguimiento, no repitas el saludo ni el nombre del negocio en cada respuesta.",
+    "Mantén las respuestas breves, claras y orientadas a resolver dudas o ayudar a solicitar una cita.",
+    "Usa el nombre del negocio con moderacion; no lo menciones si la respuesta ya se entiende sin repetirlo."
+  ],
+  "policies": [
+    "Las citas quedan por confirmar por una persona del negocio.",
+    "Los precios pueden cambiar sin previo aviso."
+  ],
+  "responseTemplates": {
+    "location": "Estamos ubicados en {location}",
+    "schedule": "Nuestro horario es: {schedule}",
+    "services": "{businessName} es un {businessType}. Ofrecemos: {services}.",
+    "businessType": "{businessName} es un {businessType}. Ofrecemos: {services}.",
+    "servicePricing": "Para {service}, manejamos este dato: {price}",
+    "pricingList": "Estos son los precios configurados como referencia: {servicePrices}",
+    "pricingUnavailable": "Por ahora no tengo un precio configurado para {service}. Puedo ayudarte a solicitar una cita para que el negocio lo confirme."
+  },
+  "unknownAnswerPolicy": "Si el dato no esta en este perfil, no inventar y ofrecer pasar el caso a una persona del negocio."
+}

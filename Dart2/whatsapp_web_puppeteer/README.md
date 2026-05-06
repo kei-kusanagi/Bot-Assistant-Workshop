@@ -78,6 +78,30 @@ Resumen:
 - `lib/ai/providers/ollama_provider.dart`: proveedor local via HTTP.
 - `lib/ai/ai_service.dart`: servicio que usa el bot.
 
+## Memoria local y conocimiento
+
+El bot guarda una memoria local limitada en:
+
+```text
+data/store/conversations/
+```
+
+Cada usuario se identifica por su JID de WhatsApp (`@lid`, `@c.us`, etc.). Para evitar abuso o archivos enormes:
+
+- solo guarda los ultimos 20 mensajes por usuario;
+- cada mensaje guardado se recorta a 1000 caracteres;
+- si un mensaje entrante supera 2000 caracteres, no se manda a Ollama y el bot pide un resumen.
+
+El conocimiento oficial del negocio vive en:
+
+```text
+data/business_profile.json
+```
+
+Si no existe, el bot lo crea automaticamente con campos vacios. Usa `business_profile.example.json` como referencia para llenarlo. La regla importante es: si un dato no esta en ese perfil, el bot debe evitar inventarlo.
+
+Ese mismo archivo tambien puede incluir `responseTemplates` para respuestas directas editables, por ejemplo ubicacion, horario, servicios o tipo de negocio. El codigo solo detecta la intencion general; el texto de la respuesta sale del JSON.
+
 Si no aparece `[RX]`, el bot tiene un respaldo por polling de chats no leidos.
 Para ver errores de ese respaldo:
 
