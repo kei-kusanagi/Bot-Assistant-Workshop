@@ -252,9 +252,13 @@ dart run
 
 - `lib/ai/ai_provider.dart`: contrato abstracto `AIProvider` con `Future<String> generateResponse(String prompt)`.
 - `lib/ai/providers/ollama_provider.dart`: proveedor HTTP contra **Ollama local** (`http://localhost:11434`, endpoint `/api/generate`, `stream: false`).
-- `lib/ai/ai_service.dart`: capa que recibe un `AIProvider`, construye un prompt de sistema simple para asistente de citas y expone `getResponse(message)`.
+- `lib/ai/ai_context.dart`: modelos de contexto para `BusinessProfile`, mensajes recientes y memoria conversacional.
+- `lib/ai/ai_service.dart`: capa que recibe un `AIProvider`; primero intenta respuestas directas desde `business_profile.json` (ubicacion, horarios, servicios, tipo de negocio y precios) y, si no aplica, construye un prompt con negocio + memoria + mensaje actual.
+- `lib/storage/local_conversation_store.dart`: almacenamiento JSON local migrable a Supabase; guarda conversaciones por JID en `data/store/conversations/`, con max. 20 mensajes por usuario, 1000 caracteres por mensaje guardado y rechazo de mensajes entrantes mayores a 2000 caracteres.
+- `data/business_profile.json`: perfil local del negocio usado como conocimiento oficial. Si falta, el bot lo crea con campos vacios; `business_profile.example.json` sirve como plantilla. Incluye `businessType`, `services`, `servicePrices`, `assistantInstructions`, `policies` y `responseTemplates` para que respuestas directas (ubicacion, horarios, servicios, tipo de negocio, precios) se editen desde datos y no desde codigo.
 - `bin/whatsapp_web_puppeteer.dart`: reemplaza la respuesta fija `ping -> pong` / `Recibido: ...` por respuesta generada desde `AIService`.
 - Respaldo de recepción: además de `WhatsappEvent.chatNewMessage`, se agregó **polling cada 3s** de chats no leídos porque en una corrida WhatsApp quedó `[conn] connected` pero no emitió `[RX]` al llegar un mensaje. Si el respaldo detecta mensajes, imprime `[RX/poll]`.
+- Robustez agregada: se ignoran orígenes no soportados (`@newsletter`, grupos `@g.us`, broadcasts/status) para evitar intentar responder a canales internos de WhatsApp Web. Si Puppeteer pierde la página/sesión de Chrome (`Session closed`, `page has been closed`, `Websocket url not found`), el bot cancela la sesión actual y reintenta conectar automáticamente en vez de quedarse spameando `[poll-error]`.
 
 **Configuración por entorno:**
 
@@ -267,7 +271,29 @@ dart run
 **Doc técnica:** `Dart2/DOCS/AI_ADAPTER_ARCHITECTURE.md`.
 **Diagrama para explicar al jefe:** `Dart2/DOCS/AI_WHATSAPP_FLOW_DIAGRAM.md`.
 
-**Validación parcial:** `ollama pull llama3.2:3b` descargó el modelo y el bot conectó a WhatsApp (`[conn] connected`). En la primera prueba de IA no apareció `[RX]`, por lo que se agregó el respaldo por polling. Siguiente validación: reiniciar el bot y confirmar que al enviar mensaje aparece `[RX]` o `[RX/poll]`, y que la respuesta sale de Ollama.
+**Validación parcial:** `ollama pull llama3.2:3b` descargó el modelo y el bot conectó a WhatsApp (`[conn] connected`). El bot respondio por evento/polling, recordo el nombre del usuario mediante memoria local, leyo servicios/ubicacion/horarios desde `business_profile.json` y se reforzo el flujo para no inventar precios: los costos salen de `servicePrices` y `responseTemplates`; si falta un precio, debe decir que no esta configurado.
+
+#### Memoria + conocimiento local migrable a Supabase — implementado
+
+**Motivo:** en prueba real, Ollama respondió, pero:
+
+- no recuerda conversaciones propias si el usuario retoma después;
+- no guarda registro estructurado por número/JID del paciente;
+- no sabe servicios reales, horarios, ubicación ni disponibilidad;
+- inventó servicios al preguntarle “qué servicios ofrecen”, lo cual contradice la regla del proyecto: **no inventar** y usar solo datos publicados/cargados.
+
+**Esto sí cae dentro de los requisitos originales del jefe:** conversación ligada al usuario, recepción/agendado en contexto del chat, pacientes/contactos asociados a su número, servicios y citas.
+
+**Implementación aplicada (sin Supabase todavía):**
+
+- Guardar en JSON local bajo `Dart2/whatsapp_web_puppeteer/data/`:
+  - `business_profile.json`: nombre, tipo de negocio, servicios, precios de ejemplo, horarios, ubicacion, instrucciones de estilo, politicas y plantillas de respuesta.
+  - `store/conversations/<jid>.json`: mensajes recientes, resumen simple y datos detectados (`nombre`, `intencion`, `servicio_deseado`).
+- Se agregaron limites antiabuso: max. 20 mensajes por usuario, 1000 caracteres por mensaje guardado, rechazo de mensajes entrantes mayores a 2000 caracteres.
+- `AIService` ahora evita consultar Ollama cuando puede responder con datos directos del perfil del negocio mediante `responseTemplates`.
+- El prompt incluye perfil del negocio, instrucciones de estilo, memoria local, datos estructurados y el mensaje actual.
+
+**Próximo paso exacto:** agregar agenda/citas reales. Por ahora el bot puede tomar intencion, servicio y horario preferido, pero no consulta disponibilidad real ni crea citas persistidas. La siguiente capa deberia ser `appointments.json` o tablas Supabase para citas "por confirmar", con escalado a recepcion/admin.
 
 ### D) `Flutter/whatsapp_wa_drago` — Drago (whatsapp-web.js + InAppWebView) — *exploración abr. 2026*
 
