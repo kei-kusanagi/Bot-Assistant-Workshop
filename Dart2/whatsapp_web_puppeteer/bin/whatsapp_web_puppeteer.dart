@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dotenv/dotenv.dart';
 import 'package:path/path.dart' as p;
 import 'package:qr/qr.dart' as qr_pkg;
 import 'package:whatsapp_bot_flutter/whatsapp_bot_flutter.dart';
@@ -12,7 +13,10 @@ import 'package:whatsapp_web_puppeteer/storage/local_conversation_store.dart';
 
 enum _BotRunSignal { stop, reconnect }
 
+late final DotEnv _env;
+
 Future<void> main(List<String> arguments) async {
+  _env = _loadEnv();
   WhatsappBotUtils.enableLogs(_envFlag('WPP_VERBOSE_LOGS'));
 
   final cwd = Directory.current;
@@ -28,11 +32,11 @@ Future<void> main(List<String> arguments) async {
   }
 
   final headless = _envFlag('HEADLESS_CHROME');
-  final phoneLink = Platform.environment['WHATSAPP_LINK_PHONE']?.trim();
+  final phoneLink = _envValue('WHATSAPP_LINK_PHONE')?.trim();
   final ollamaBaseUrl = Uri.parse(
-    Platform.environment['OLLAMA_BASE_URL'] ?? 'http://localhost:11434',
+    _envValue('OLLAMA_BASE_URL') ?? 'http://localhost:11434',
   );
-  final ollamaModel = Platform.environment['OLLAMA_MODEL'] ?? 'llama3.2:3b';
+  final ollamaModel = _envValue('OLLAMA_MODEL') ?? 'llama3.2:3b';
   final aiService = AIService(
     provider: OllamaProvider(baseUrl: ollamaBaseUrl, model: ollamaModel),
   );
@@ -46,6 +50,9 @@ Future<void> main(List<String> arguments) async {
   stdout.writeln('Chromium cache: ${chromeDir.path}');
   stdout.writeln('Memoria local: ${storeDir.path}');
   stdout.writeln('Perfil del negocio: ${businessProfileFile.path}');
+  if (File(p.join(cwd.path, '.env')).existsSync()) {
+    stdout.writeln('Config: .env cargado desde ${p.join(cwd.path, '.env')}');
+  }
   stdout.writeln('AI provider: Ollama ($ollamaBaseUrl), model: $ollamaModel');
   stdout.writeln(
     headless
@@ -484,8 +491,21 @@ Future<void> _sendReply(
 }
 
 bool _envFlag(String name) {
-  final raw = Platform.environment[name]?.trim().toLowerCase();
+  final raw = _envValue(name)?.trim().toLowerCase();
   return raw == '1' || raw == 'true' || raw == 'yes' || raw == 'si';
+}
+
+String? _envValue(String name) {
+  final value = _env[name]?.trim();
+  if (value == null || value.isEmpty) return null;
+  return value;
+}
+
+DotEnv _loadEnv() {
+  final env = DotEnv(quiet: true)..load();
+  // Terminal environment variables intentionally win over .env values.
+  env.addAll(Platform.environment);
+  return env;
 }
 
 Uint8List _pngBytes(Uint8List bytesOrDataUrl) {

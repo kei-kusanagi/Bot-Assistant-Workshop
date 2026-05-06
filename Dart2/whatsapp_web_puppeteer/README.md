@@ -37,6 +37,17 @@ Tambien se intenta guardar el ultimo QR en `data/last_qr.png`.
 
 ## Variables utiles
 
+El bot carga automaticamente un archivo `.env` local si existe. Para iniciar,
+copia `.env.example` a `.env` y ajusta valores una sola vez:
+
+```powershell
+Copy-Item .env.example .env
+dart run
+```
+
+El archivo `.env` no se sube a Git. Si defines una variable en la terminal, esa
+variable tiene prioridad sobre el valor del `.env`.
+
 ```powershell
 # Chrome sin ventana visible; usa QR de consola/archivo.
 $env:HEADLESS_CHROME="1"
