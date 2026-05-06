@@ -293,7 +293,37 @@ dart run
 - `AIService` ahora evita consultar Ollama cuando puede responder con datos directos del perfil del negocio mediante `responseTemplates`.
 - El prompt incluye perfil del negocio, instrucciones de estilo, memoria local, datos estructurados y el mensaje actual.
 
-**Próximo paso exacto:** agregar agenda/citas reales. Por ahora el bot puede tomar intencion, servicio y horario preferido, pero no consulta disponibilidad real ni crea citas persistidas. La siguiente capa deberia ser `appointments.json` o tablas Supabase para citas "por confirmar", con escalado a recepcion/admin.
+#### Ruta inmediata para alinear con lo pedido por el jefe
+
+El objetivo principal no es perfeccionar la personalidad conversacional, sino demostrar una ruta técnica reproducible para **WhatsApp + Dart + citas**, con opción futura de contenedor/servidor/Supabase.
+
+**Orden recomendado:**
+
+1. **Script de arranque limpio local** para `Dart2/whatsapp_web_puppeteer` — implementado en `scripts/start_bot.ps1`:
+   - cerrar solo procesos residuales de Chrome/Chromium del bot;
+   - validar `.env`;
+   - validar que Ollama responde;
+   - arrancar `dart run`;
+   - documentar cómo resolver `Websocket url not found` sin pasos manuales.
+2. **Modo local estable documentado:**
+   - ubicación de sesión WhatsApp (`data/whatsapp-session`);
+   - perfil del negocio (`data/business_profile.json`);
+   - memoria (`data/store/conversations`);
+   - limpieza/reinicio seguro.
+3. **Contenerización inicial:**
+   - `Dockerfile` para el bot Dart2 con Chromium/headless;
+   - volúmenes persistentes para sesión y datos;
+   - decidir si Ollama corre fuera del contenedor o en `docker-compose`.
+4. **Agenda mínima por confirmar:**
+   - crear `appointments.json` o store equivalente;
+   - guardar solicitudes con estado `pending_confirmation`;
+   - pedir nombre, servicio, día y horario preferido;
+   - dejar confirmación final a recepción/admin.
+5. **Migración futura a Supabase:**
+   - reemplazar JSON locales por tablas/servicios;
+   - mantener el mismo flujo WhatsApp/IA.
+
+**Próximo paso exacto:** documentar el modo local estable y luego preparar la contenerización inicial. El script de arranque limpio ya resuelve el bloqueo frecuente de Chrome residual y da una base reproducible para las siguientes pruebas.
 
 ### D) `Flutter/whatsapp_wa_drago` — Drago (whatsapp-web.js + InAppWebView) — *exploración abr. 2026*
 

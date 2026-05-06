@@ -18,6 +18,16 @@ pero con un enfoque distinto a Neonize:
 Desde esta carpeta:
 
 ```powershell
+.\scripts\start_bot.ps1
+```
+
+Ese script hace el arranque recomendado para desarrollo local: limpia procesos
+residuales de Chrome del bot, crea `.env` desde `.env.example` si falta, revisa
+Ollama, ejecuta `dart pub get` y finalmente lanza `dart run`.
+
+Tambien puedes arrancar manualmente:
+
+```powershell
 dart pub get
 dart run
 ```
