@@ -1,0 +1,18 @@
+{
+  "timezone": "America/Mexico_City",
+  "slotMinutes": 30,
+  "bookingWindowDays": 30,
+  "minNoticeHours": 4,
+  "workingHours": {
+    "monday": [{ "start": "10:00", "end": "19:30" }],
+    "tuesday": [{ "start": "10:00", "end": "19:30" }],
+    "wednesday": [{ "start": "10:00", "end": "19:30" }],
+    "thursday": [{ "start": "10:00", "end": "19:30" }],
+    "friday": [{ "start": "10:00", "end": "19:30" }],
+    "saturday": [],
+    "sunday": []
+  },
+  "blockedDates": [
+    { "date": "2026-05-10", "reason": "Dia festivo" }
+  ]
+}

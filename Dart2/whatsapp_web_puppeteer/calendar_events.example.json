@@ -1,0 +1,21 @@
+{
+  "events": [
+    {
+      "id": "blk_example_001",
+      "type": "block",
+      "status": "blocked",
+      "start": "2026-05-13T14:00:00",
+      "end": "2026-05-13T15:00:00",
+      "title": "Bloqueo interno"
+    },
+    {
+      "id": "evt_example_001",
+      "type": "appointment",
+      "status": "confirmed",
+      "start": "2026-05-14T16:00:00",
+      "end": "2026-05-14T16:30:00",
+      "title": "Cita confirmada de ejemplo",
+      "appointmentId": "appt_example_001"
+    }
+  ]
+}

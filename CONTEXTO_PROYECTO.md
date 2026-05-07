@@ -305,12 +305,12 @@ El objetivo principal no es perfeccionar la personalidad conversacional, sino de
    - validar que Ollama responde;
    - arrancar `dart run`;
    - documentar cómo resolver `Websocket url not found` sin pasos manuales.
-2. **Agenda mínima por confirmar con calendario JSON simulado** — siguiente bloque de implementación:
-   - crear `data/availability.json` como calendario/base de disponibilidad;
-   - crear `data/appointments.json` como solicitudes/citas;
-   - ofrecer horarios libres calculados desde disponibilidad menos citas existentes;
-   - guardar solicitudes con estado `pending_confirmation`;
-   - dejar confirmación final a recepción/admin.
+2. **Agenda local con calendario JSON simulado** — implementada como primer flujo de negocio:
+   - crea `data/availability.json` como calendario/base de disponibilidad;
+   - crea `data/calendar_events.json` como eventos que bloquean la agenda;
+   - crea `data/appointments.json` como citas creadas desde WhatsApp;
+   - ofrece horarios libres calculados desde disponibilidad menos eventos existentes;
+   - para efectos de prueba local, guarda citas como `confirmed` y bloquea el slot en `calendar_events.json`.
 3. **Modo local estable documentado:**
    - ubicación de sesión WhatsApp (`data/whatsapp-session`);
    - perfil del negocio (`data/business_profile.json`);
@@ -326,14 +326,21 @@ El objetivo principal no es perfeccionar la personalidad conversacional, sino de
    - reemplazar JSON locales por tablas/servicios;
    - mantener el mismo flujo WhatsApp/IA.
 
-#### Próximo bloque exacto: agenda local con disponibilidad simulada
+#### Agenda local con disponibilidad simulada
 
-Cuando el usuario diga “continuemos”, implementar esto primero:
+Implementado en `Dart2/whatsapp_web_puppeteer`:
+
+- `lib/scheduling/scheduling_models.dart`: modelos de disponibilidad, eventos, citas y borradores.
+- `lib/scheduling/local_scheduling_store.dart`: persistencia JSON local.
+- `lib/scheduling/scheduling_service.dart`: flujo de agenda, slots libres y creación de citas.
+- `bin/whatsapp_web_puppeteer.dart`: agenda conectada antes de Ollama para que las citas no dependan del LLM.
 
 **Archivos locales nuevos bajo `Dart2/whatsapp_web_puppeteer/data/`:**
 
 - `availability.json`: reglas de disponibilidad del negocio.
-- `appointments.json`: citas/solicitudes creadas desde WhatsApp.
+- `calendar_events.json`: bloques/citas que ocupan el calendario.
+- `appointments.json`: citas creadas desde WhatsApp.
+- `store/appointment_drafts/<jid>.json`: datos parciales mientras el usuario completa nombre, servicio, dia y hora.
 
 **Estructura sugerida para `availability.json`:**
 
@@ -341,6 +348,8 @@ Cuando el usuario diga “continuemos”, implementar esto primero:
 {
   "timezone": "America/Mexico_City",
   "slotMinutes": 30,
+  "bookingWindowDays": 30,
+  "minNoticeHours": 4,
   "workingHours": {
     "monday": [{ "start": "10:00", "end": "19:30" }],
     "tuesday": [{ "start": "10:00", "end": "19:30" }],
@@ -356,6 +365,24 @@ Cuando el usuario diga “continuemos”, implementar esto primero:
 }
 ```
 
+**Estructura sugerida para `calendar_events.json`:**
+
+```json
+{
+  "events": [
+    {
+      "id": "evt_...",
+      "type": "appointment",
+      "status": "confirmed",
+      "start": "2026-05-12T16:00:00",
+      "end": "2026-05-12T16:30:00",
+      "title": "Endodoncia - Carlos",
+      "appointmentId": "appt_..."
+    }
+  ]
+}
+```
+
 **Estructura sugerida para `appointments.json`:**
 
 ```json
@@ -366,42 +393,44 @@ Cuando el usuario diga “continuemos”, implementar esto primero:
       "jid": "86062705705098@lid",
       "name": "Carlos",
       "service": "Endodoncia",
-      "preferredDate": "2026-05-12",
-      "preferredTime": "16:00",
-      "status": "pending_confirmation",
+      "start": "2026-05-12T16:00:00",
+      "end": "2026-05-12T16:30:00",
+      "status": "confirmed",
       "source": "whatsapp",
       "notes": "",
-      "createdAt": "2026-05-06T..."
+      "createdAt": "2026-05-07T..."
     }
   ]
 }
 ```
 
-**Estados mínimos:**
+**Estados contemplados:**
 
 - `pending_confirmation`: solicitud capturada por WhatsApp, pendiente de recepción/admin.
-- `confirmed`: confirmado manualmente por recepción/admin (futuro).
+- `confirmed`: reservado en el calendario. En la prueba local el bot lo usa directamente.
 - `cancelled`: cancelado.
 - `reschedule_requested`: usuario pidió cambio.
 
-**Flujo conversacional a implementar:**
+**Flujo conversacional implementado:**
 
 1. Detectar intención de agendar/cambiar/cancelar.
 2. Usar memoria local para no pedir datos repetidos.
 3. Pedir solo lo faltante: nombre, servicio, día y horario preferido.
-4. Si el usuario pregunta disponibilidad, calcular 2-3 slots libres desde `availability.json` menos `appointments.json`.
-5. Cuando haya datos suficientes, guardar en `appointments.json` con `status: pending_confirmation`.
-6. Responder con resumen: servicio, día/hora preferida y aviso de “pendiente de confirmación por recepción”.
-7. No prometer cita confirmada mientras no exista agenda real/admin.
+4. Si el usuario pregunta disponibilidad, calcular 2-3 slots libres desde `availability.json` menos `calendar_events.json`.
+5. Cuando haya datos suficientes y el slot esté libre, guardar en `appointments.json` con `status: confirmed`.
+6. Crear un evento asociado en `calendar_events.json` para bloquear ese horario.
+7. Responder con resumen: servicio, nombre, fecha, hora y estado confirmado en prueba local.
 
 **Diseño para migrar a Supabase después:**
 
 - `business_profile.json` -> tabla `business_profile` / `business_settings`.
 - `availability.json` -> tabla `business_availability` + `blocked_dates`.
+- `calendar_events.json` -> tabla `calendar_events`.
 - `appointments.json` -> tabla `appointments`.
 - `data/store/conversations/*.json` -> tablas `contacts`, `conversation_messages` y/o `conversation_summaries`.
+- `data/store/appointment_drafts/*.json` -> draft en tabla `appointment_drafts` o estado temporal de conversación.
 
-**Después de este bloque:** documentar modo local estable y luego preparar `Dockerfile`/`docker-compose` con volúmenes persistentes para `data/`.
+**Después de este bloque:** ampliar cambio/cancelación de citas y luego preparar `Dockerfile`/`docker-compose` con volúmenes persistentes para `data/`.
 
 ### D) `Flutter/whatsapp_wa_drago` — Drago (whatsapp-web.js + InAppWebView) — *exploración abr. 2026*
 

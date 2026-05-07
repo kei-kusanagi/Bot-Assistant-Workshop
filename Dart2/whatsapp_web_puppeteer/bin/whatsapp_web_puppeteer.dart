@@ -9,6 +9,8 @@ import 'package:qr/qr.dart' as qr_pkg;
 import 'package:whatsapp_bot_flutter/whatsapp_bot_flutter.dart';
 import 'package:whatsapp_web_puppeteer/ai/ai_service.dart';
 import 'package:whatsapp_web_puppeteer/ai/providers/ollama_provider.dart';
+import 'package:whatsapp_web_puppeteer/scheduling/local_scheduling_store.dart';
+import 'package:whatsapp_web_puppeteer/scheduling/scheduling_service.dart';
 import 'package:whatsapp_web_puppeteer/storage/local_conversation_store.dart';
 
 enum _BotRunSignal { stop, reconnect }
@@ -44,7 +46,13 @@ Future<void> main(List<String> arguments) async {
     storeDirectory: storeDir,
     businessProfileFile: businessProfileFile,
   );
+  final schedulingStore = LocalSchedulingStore(
+    dataDirectory: dataDir,
+    storeDirectory: storeDir,
+  );
+  final schedulingService = SchedulingService(store: schedulingStore);
   await conversationStore.ensureReady();
+  await schedulingStore.ensureReady();
   stdout.writeln('Dart2 WhatsApp Web bot (Puppeteer + WA-JS)');
   stdout.writeln('Sesion: ${sessionDir.path}');
   stdout.writeln('Chromium cache: ${chromeDir.path}');
@@ -84,6 +92,7 @@ Future<void> main(List<String> arguments) async {
         phoneLink: phoneLink,
         aiService: aiService,
         conversationStore: conversationStore,
+        schedulingService: schedulingService,
         stopSignal: stopSignal.future,
       );
 
@@ -108,6 +117,7 @@ Future<_BotRunSignal> _runBotSession({
   required String? phoneLink,
   required AIService aiService,
   required LocalConversationStore conversationStore,
+  required SchedulingService schedulingService,
   required Future<void> stopSignal,
 }) async {
   final handledMessageIds = <String>{};
@@ -190,6 +200,7 @@ Future<_BotRunSignal> _runBotSession({
           client!,
           aiService,
           conversationStore,
+          schedulingService,
           data,
           handledMessageIds,
         ).catchError((Object error) {
@@ -205,6 +216,7 @@ Future<_BotRunSignal> _runBotSession({
       client,
       aiService,
       conversationStore,
+      schedulingService,
       handledMessageIds,
       onFatalError: requestReconnect,
     );
@@ -251,6 +263,7 @@ Future<void> _handleIncoming(
   WhatsappClient client,
   AIService aiService,
   LocalConversationStore conversationStore,
+  SchedulingService schedulingService,
   dynamic data,
   Set<String> handledMessageIds,
 ) async {
@@ -279,6 +292,7 @@ Future<void> _handleIncoming(
       client,
       aiService,
       conversationStore,
+      schedulingService,
       to: from,
       body: body,
       id: id,
@@ -290,6 +304,7 @@ Timer _startMessagePolling(
   WhatsappClient client,
   AIService aiService,
   LocalConversationStore conversationStore,
+  SchedulingService schedulingService,
   Set<String> handledMessageIds, {
   required void Function(Object error) onFatalError,
 }) {
@@ -302,6 +317,7 @@ Timer _startMessagePolling(
         client,
         aiService,
         conversationStore,
+        schedulingService,
         handledMessageIds,
         onFatalError: onFatalError,
       ).whenComplete(() {
@@ -315,6 +331,7 @@ Future<void> _pollUnreadMessages(
   WhatsappClient client,
   AIService aiService,
   LocalConversationStore conversationStore,
+  SchedulingService schedulingService,
   Set<String> handledMessageIds, {
   required void Function(Object error) onFatalError,
 }) async {
@@ -365,6 +382,7 @@ Future<void> _pollUnreadMessages(
           client,
           aiService,
           conversationStore,
+          schedulingService,
           to: from,
           body: body,
         );
@@ -412,7 +430,8 @@ bool _isBrowserSessionClosedError(Object error) {
 Future<void> _generateAndSendReply(
   WhatsappClient client,
   AIService aiService,
-  LocalConversationStore conversationStore, {
+  LocalConversationStore conversationStore,
+  SchedulingService schedulingService, {
   required String to,
   required String body,
   MessageId? id,
@@ -431,6 +450,23 @@ Future<void> _generateAndSendReply(
     await conversationStore.saveUserMessage(to, body);
     final businessProfile = await conversationStore.loadBusinessProfile();
     final conversationContext = await conversationStore.loadContext(to);
+    final schedulingReply = await schedulingService.handleMessage(
+      jid: to,
+      message: body,
+      businessProfile: businessProfile,
+      conversationContext: conversationContext,
+    );
+    if (schedulingReply != null) {
+      await _sendReply(
+        client,
+        to: to,
+        message: schedulingReply,
+        replyMessageId: id,
+      );
+      await conversationStore.saveAssistantMessage(to, schedulingReply);
+      stdout.writeln('[TX] $to: $schedulingReply');
+      return;
+    }
     final reply = await aiService.getResponse(
       body,
       businessProfile: businessProfile,

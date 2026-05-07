@@ -123,6 +123,21 @@ Si no existe, el bot lo crea automaticamente con campos vacios. Usa `business_pr
 
 Ese mismo archivo tambien puede incluir `responseTemplates` para respuestas directas editables, por ejemplo ubicacion, horario, servicios o tipo de negocio. El codigo solo detecta la intencion general; el texto de la respuesta sale del JSON.
 
+## Agenda local simulada
+
+El bot puede agendar citas en archivos JSON locales antes de migrar a Supabase:
+
+```text
+data/availability.json
+data/calendar_events.json
+data/appointments.json
+data/store/appointment_drafts/
+```
+
+Si esos archivos no existen, el bot los crea automaticamente. Los archivos `availability.example.json`, `calendar_events.example.json` y `appointments.example.json` documentan la estructura esperada.
+
+El flujo de agenda corre antes de Ollama: detecta intención de cita, pide solo nombre/servicio/dia/hora faltante, calcula horarios libres desde `availability.json` menos `calendar_events.json`, y guarda la cita como `confirmed` para la prueba local. En producción se puede cambiar el store JSON por Supabase manteniendo el mismo `SchedulingService`.
+
 Si no aparece `[RX]`, el bot tiene un respaldo por polling de chats no leidos.
 Para ver errores de ese respaldo:
 
