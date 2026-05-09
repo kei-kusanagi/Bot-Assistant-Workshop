@@ -305,12 +305,15 @@ El objetivo principal no es perfeccionar la personalidad conversacional, sino de
    - validar que Ollama responde;
    - arrancar `dart run`;
    - documentar cómo resolver `Websocket url not found` sin pasos manuales.
-2. **Agenda local con calendario JSON simulado** — implementada como primer flujo de negocio:
+2. **Agenda local con calendario JSON simulado** — implementada (primer flujo de negocio); **extendida mayo 2026**:
    - crea `data/availability.json` como calendario/base de disponibilidad;
    - crea `data/calendar_events.json` como eventos que bloquean la agenda;
    - crea `data/appointments.json` como citas creadas desde WhatsApp;
    - ofrece horarios libres calculados desde disponibilidad menos eventos existentes;
-   - para efectos de prueba local, guarda citas como `confirmed` y bloquea el slot en `calendar_events.json`.
+   - para la prueba local, citas **`confirmed`** y bloqueo del slot como evento;
+   - **listar** proximas citas por JID; **cancelar** (confirmacion **`si cancelar`**) y **reprogramar** (libera anterior como `cancelled`, nueva cita nueva);
+   - borradores de gestión en `mgmt_*`; **TTL 24 h** al cargar borrador (`LocalSchedulingStore.managementDraftMaxAge`);
+   - atajos *cancelar/reprogramar cita N*, reprogramacion con fecha nueva en una sola frase cuando el parser permite.
 3. **Modo local estable documentado:**
    - ubicación de sesión WhatsApp (`data/whatsapp-session`);
    - perfil del negocio (`data/business_profile.json`);
@@ -330,9 +333,9 @@ El objetivo principal no es perfeccionar la personalidad conversacional, sino de
 
 Implementado en `Dart2/whatsapp_web_puppeteer`:
 
-- `lib/scheduling/scheduling_models.dart`: modelos de disponibilidad, eventos, citas y borradores.
-- `lib/scheduling/local_scheduling_store.dart`: persistencia JSON local.
-- `lib/scheduling/scheduling_service.dart`: flujo de agenda, slots libres y creación de citas.
+- `lib/scheduling/scheduling_models.dart`: disponibilidad, eventos de calendario, citas (`Appointment`), borrador de nueva cita (`SchedulingDraft`), borrador de **gestión** (`SchedulingManagementDraft`: cancelar/reprogramar en varios pasos).
+- `lib/scheduling/local_scheduling_store.dart`: persistencia JSON; **`managementDraftMaxAge`** (por defecto **24 h**) borra borradores de gestión viejos al leerlos para evitar interpretar mensajes dias despues dentro de un flujo a medias.
+- `lib/scheduling/scheduling_service.dart`: agendar listar futuras cancelar reprogramar; indices en una sola linea (*cancelar cita 2*, *reprogramar cita 2*); reprogramacion *one-shot* si el mismo mensaje trae nueva fecha y hora entendidas por el parser; huecos calculados omitiendo una cita al moverla (`ignoreAppointmentId`).
 - `bin/whatsapp_web_puppeteer.dart`: agenda conectada antes de Ollama para que las citas no dependan del LLM.
 
 **Archivos locales nuevos bajo `Dart2/whatsapp_web_puppeteer/data/`:**
@@ -340,7 +343,8 @@ Implementado en `Dart2/whatsapp_web_puppeteer`:
 - `availability.json`: reglas de disponibilidad del negocio.
 - `calendar_events.json`: bloques/citas que ocupan el calendario.
 - `appointments.json`: citas creadas desde WhatsApp.
-- `store/appointment_drafts/<jid>.json`: datos parciales mientras el usuario completa nombre, servicio, dia y hora.
+- `store/appointment_drafts/<jid>.json`: borrador solo para **nueva** cita (nombre, servicio, dia, hora).
+- `store/appointment_drafts/mgmt_<jid>.json`: estado conversacional cancelar/reprogramar (hasta caducidad 24 h).
 
 **Estructura sugerida para `availability.json`:**
 
@@ -411,15 +415,25 @@ Implementado en `Dart2/whatsapp_web_puppeteer`:
 - `cancelled`: cancelado.
 - `reschedule_requested`: usuario pidió cambio.
 
-**Flujo conversacional implementado:**
+**Flujo conversacional implementado (agenda + gestión):**
 
-1. Detectar intención de agendar/cambiar/cancelar.
-2. Usar memoria local para no pedir datos repetidos.
-3. Pedir solo lo faltante: nombre, servicio, día y horario preferido.
-4. Si el usuario pregunta disponibilidad, calcular 2-3 slots libres desde `availability.json` menos `calendar_events.json`.
-5. Cuando haya datos suficientes y el slot esté libre, guardar en `appointments.json` con `status: confirmed`.
-6. Crear un evento asociado en `calendar_events.json` para bloquear ese horario.
-7. Responder con resumen: servicio, nombre, fecha, hora y estado confirmado en prueba local.
+1. **Nueva cita:** detectar agendar/disponibilidad; memoria para no repetir datos; slots desde `availability.json` menos eventos ocupados (incluye citas confirmadas como eventos tipo `appointment`); guardar en `appointments.json` como `confirmed` en esta prueba y reflejar en `calendar_events.json`.
+2. **Listado:** mensajes tipo *mis citas* / *próxima cita*: solo citas futuras `confirmed` del mismo JID.
+3. **Cancelar:** requiere mencionar **cita** (evita falsos positivos tipo “cancelar suscripción”). Varias citas: elegir numero o frase tipo *cancelar cita 2*; una cita confirmación explicita **`si cancelar`** o **`no`**.
+4. **Reprogramar:** varias citas: numero / *reprogramar cita 2*; opción de mismo mensaje con nueva fecha/hora si el parser lo entiende; el hueco anterior se libera (cita/evento marcados `cancelled`) y se crea cita nueva.
+5. Agenda y comandos van **antes** de Ollama en el ejecutable Dart.
+
+**`AIService` y arranque (UX sin depender tanto del LLM):**
+
+- Saludos cortos aislados (p. ej. *hola qué tal*) pueden responder con plantilla **`greeting`** en `business_profile` **sin llamar Ollama**; ver `business_profile.example.json`.
+- Si Ollama no responde: log **`[ia-offline]`**, respuesta usable al usuario (agenda/horario/ubicacion) y mensajes de arranque que aclaran qué puede ir sin IA.
+
+**Para la siguiente sesión (pendientes de roadmap del jefe / producto):**
+
+- **`pending_confirmation`** en flujo WhatsApp como paso opcional antes de ocupar hueco si el negocio lo exige (hoy todo queda **confirmed** para la demo JSON).
+- **Modo local estable** revisado punto por punto (`data/` completo + troubleshooting ya parcialmente en README: sesión WhatsApp `Phone not connected`, `mgmt` caducidad, etc.).
+- **Dockerfile / docker-compose** para `whatsapp_web_puppeteer` + volúmenes + decision Ollama.
+- Migración gradual a **Supabase** usando las mismas entidades ya reflejadas en JSON.
 
 **Diseño para migrar a Supabase después:**
 
@@ -428,9 +442,10 @@ Implementado en `Dart2/whatsapp_web_puppeteer`:
 - `calendar_events.json` -> tabla `calendar_events`.
 - `appointments.json` -> tabla `appointments`.
 - `data/store/conversations/*.json` -> tablas `contacts`, `conversation_messages` y/o `conversation_summaries`.
-- `data/store/appointment_drafts/*.json` -> draft en tabla `appointment_drafts` o estado temporal de conversación.
+- `data/store/appointment_drafts/<archivo derivado del JID>.json`: borrador **nueva cita**.
+- `data/store/appointment_drafts/mgmt_*.json`: borrador cancelar/reprogramar (persistente hasta TTL al leer).
 
-**Después de este bloque:** ampliar cambio/cancelación de citas y luego preparar `Dockerfile`/`docker-compose` con volúmenes persistentes para `data/`.
+**Después de este bloque (actualizado mayo 2026):** cambio/cancelación/reprogramación listar ya estan implementados localmente en Dart. Siguientes hitos recomendados: **`pending_confirmation` opcional**, **documentación modo local puntualizada**, **`Dockerfile`/`docker-compose`**, **Supabase**.
 
 ### D) `Flutter/whatsapp_wa_drago` — Drago (whatsapp-web.js + InAppWebView) — *exploración abr. 2026*
 
@@ -532,7 +547,8 @@ dart run
 
 ## Próximos pasos sugeridos (cuando se retome)
 
-- Migrar citas de `citas.json` a **Supabase** (tablas por diseñar).
+- **`Dart2/whatsapp_web_puppeteer`:** modo local estable (checklist operativo ya guio en README), opción **`pending_confirmation`** antes de ocupar hueco, `Dockerfile`/`docker-compose` con volumen `data/`, despues **Supabase** con el mismo modelo de datos que los JSON actuales.
+- Migrar citas de otros demos (`citas.json` / Baileys) al esquema unificado cuando haya servidor.
 - Recordatorios y pagos (fuera del alcance actual de los demos).
 - Despliegue continuo en **Hetzner** cuando toque salir de local.
 
