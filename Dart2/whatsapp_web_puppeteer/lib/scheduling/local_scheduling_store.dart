@@ -8,6 +8,7 @@ class LocalSchedulingStore {
   LocalSchedulingStore({
     required Directory dataDirectory,
     required Directory storeDirectory,
+    this.managementDraftMaxAge = const Duration(hours: 24),
   }) : _availabilityFile = File(
          p.join(dataDirectory.path, 'availability.json'),
        ),
@@ -25,6 +26,10 @@ class LocalSchedulingStore {
   final File _calendarEventsFile;
   final File _appointmentsFile;
   final Directory _draftsDirectory;
+
+  /// Si un borrador de cancelacion/reprogramacion queda a medias, expira tras
+  /// este tiempo para no seguir interpretando mensajes dentro de ese flujo.
+  final Duration managementDraftMaxAge;
 
   Future<void> ensureReady() async {
     if (!await _availabilityFile.exists()) {
@@ -101,6 +106,120 @@ class LocalSchedulingStore {
     if (await file.exists()) await file.delete();
   }
 
+  Future<List<Appointment>> futureAppointmentsForJid(String jid) async {
+    final now = DateTime.now();
+    final all = await loadAppointments();
+    final mine =
+        all
+            .where(
+              (a) =>
+                  a.jid == jid && a.status == 'confirmed' && a.end.isAfter(now),
+            )
+            .toList()
+          ..sort((a, b) => a.start.compareTo(b.start));
+    return mine;
+  }
+
+  Future<Appointment?> appointmentByIdForJid(
+    String appointmentId,
+    String jid,
+  ) async {
+    final all = await loadAppointments();
+    for (final a in all) {
+      if (a.id == appointmentId && a.jid == jid) return a;
+    }
+    return null;
+  }
+
+  Future<SchedulingManagementDraft> loadManagementDraft(String jid) async {
+    await ensureReady();
+    final file = _managementDraftFile(jid);
+    if (!await file.exists()) return SchedulingManagementDraft.empty(jid);
+    final json = await _readJsonObject(file);
+    if (json.isEmpty) return SchedulingManagementDraft.empty(jid);
+    var draft = SchedulingManagementDraft.fromJson(json);
+    if (draft.phase != ManagementPhase.idle &&
+        DateTime.now().difference(draft.updatedAt) > managementDraftMaxAge) {
+      await clearManagementDraft(jid);
+      draft = SchedulingManagementDraft.empty(jid);
+    }
+    return draft;
+  }
+
+  Future<void> saveManagementDraft(SchedulingManagementDraft draft) async {
+    await ensureReady();
+    if (draft.phase == ManagementPhase.idle) {
+      await clearManagementDraft(draft.jid);
+      return;
+    }
+    await _writeJson(_managementDraftFile(draft.jid), draft.toJson());
+  }
+
+  Future<void> clearManagementDraft(String jid) async {
+    final file = _managementDraftFile(jid);
+    if (await file.exists()) await file.delete();
+  }
+
+  Future<void> cancelAppointmentById({
+    required String appointmentId,
+    required String jid,
+  }) async {
+    await ensureReady();
+    final appointmentsJson = await _readJsonObject(_appointmentsFile);
+    final raw = appointmentsJson['appointments'];
+    if (raw is! List) return;
+    final list = raw.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    var found = false;
+    for (var i = 0; i < list.length; i++) {
+      final row = list[i];
+      if (row['id'] == appointmentId && row['jid'] == jid) {
+        row['status'] = 'cancelled';
+        list[i] = row;
+        found = true;
+        break;
+      }
+    }
+    if (!found) return;
+    await _writeJson(_appointmentsFile, {'appointments': list});
+
+    final eventsJson = await _readJsonObject(_calendarEventsFile);
+    final rawEv = eventsJson['events'];
+    if (rawEv is! List) return;
+    final evList = rawEv
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    for (var i = 0; i < evList.length; i++) {
+      final row = evList[i];
+      if (row['appointmentId'] == appointmentId) {
+        row['status'] = 'cancelled';
+        evList[i] = row;
+      }
+    }
+    await _writeJson(_calendarEventsFile, {'events': evList});
+  }
+
+  /// Cancela la cita anterior y crea una nueva en el horario indicado.
+  Future<Appointment> rescheduleAppointment({
+    required String oldAppointmentId,
+    required String jid,
+    required DateTime newStart,
+    required DateTime newEnd,
+  }) async {
+    final old = await appointmentByIdForJid(oldAppointmentId, jid);
+    if (old == null) {
+      throw StateError('Cita no encontrada o no pertenece a este chat.');
+    }
+    await cancelAppointmentById(appointmentId: oldAppointmentId, jid: jid);
+    return createConfirmedAppointment(
+      jid: jid,
+      name: old.name,
+      service: old.service,
+      start: newStart,
+      end: newEnd,
+      notes: old.notes,
+    );
+  }
+
   Future<Appointment> createConfirmedAppointment({
     required String jid,
     required String name,
@@ -150,6 +269,12 @@ class LocalSchedulingStore {
 
     await clearDraft(jid);
     return appointment;
+  }
+
+  File _managementDraftFile(String jid) {
+    return File(
+      p.join(_draftsDirectory.path, 'mgmt_${_safeFileName(jid)}.json'),
+    );
   }
 
   File _draftFile(String jid) {

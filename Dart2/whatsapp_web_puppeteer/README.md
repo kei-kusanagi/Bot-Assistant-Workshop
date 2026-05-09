@@ -138,6 +138,10 @@ Si esos archivos no existen, el bot los crea automaticamente. Los archivos `avai
 
 El flujo de agenda corre antes de Ollama: detecta intención de cita, pide solo nombre/servicio/dia/hora faltante, calcula horarios libres desde `availability.json` menos `calendar_events.json`, y guarda la cita como `confirmed` para la prueba local. En producción se puede cambiar el store JSON por Supabase manteniendo el mismo `SchedulingService`.
 
+Tambien puedes escribir cosas como *mis citas* (listar activas), *cancelar mi cita* (pide confirmacion con *si cancelar*) o *reprogramar cita* / *cambiar el horario* (elige cita si hay varias y propone nuevo dia/hora). Los borradores de esos pasos viven en `data/store/appointment_drafts/mgmt_*.json` y **caducan a las 24 horas** si el usuario no termina el flujo, para no interpretar dias despues un "2" o un "no" como parte de una cancelacion vieja.
+
+En una sola linea también puedes: *cancelar cita 2*, *reprogramar cita 2*, o *reprogramar cita 2 martes 4pm* (fecha/hora nueva en el mismo mensaje cuando el parser ya entiende dia y hora).
+
 Si no aparece `[RX]`, el bot tiene un respaldo por polling de chats no leidos.
 Para ver errores de ese respaldo:
 

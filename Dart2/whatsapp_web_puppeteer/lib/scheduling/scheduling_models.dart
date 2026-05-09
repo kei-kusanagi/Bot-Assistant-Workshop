@@ -250,6 +250,120 @@ class SchedulingDraft {
   };
 }
 
+/// Borrador para cancelacion o reprogramacion (multipaso por chat).
+class SchedulingManagementDraft {
+  const SchedulingManagementDraft({
+    required this.jid,
+    required this.phase,
+    required this.candidateAppointmentIds,
+    required this.selectedAppointmentId,
+    required this.newPreferredDate,
+    required this.newPreferredTime,
+    required this.updatedAt,
+  });
+
+  factory SchedulingManagementDraft.empty(String jid) {
+    return SchedulingManagementDraft(
+      jid: jid,
+      phase: ManagementPhase.idle,
+      candidateAppointmentIds: const [],
+      selectedAppointmentId: null,
+      newPreferredDate: '',
+      newPreferredTime: '',
+      updatedAt: DateTime.now(),
+    );
+  }
+
+  factory SchedulingManagementDraft.fromJson(Map<String, dynamic> json) {
+    final rawCandidates = json['candidateAppointmentIds'];
+    final ids = <String>[];
+    if (rawCandidates is List) {
+      for (final item in rawCandidates) {
+        if (item != null && item.toString().trim().isNotEmpty) {
+          ids.add(item.toString().trim());
+        }
+      }
+    }
+    return SchedulingManagementDraft(
+      jid: _string(json['jid']),
+      phase: ManagementPhase.fromWire(_string(json['phase'], fallback: 'idle')),
+      candidateAppointmentIds: ids,
+      selectedAppointmentId: _nullableString(json['selectedAppointmentId']),
+      newPreferredDate: _string(json['newPreferredDate']),
+      newPreferredTime: _string(json['newPreferredTime']),
+      updatedAt:
+          DateTime.tryParse(_string(json['updatedAt'])) ?? DateTime.now(),
+    );
+  }
+
+  final String jid;
+  final ManagementPhase phase;
+  final List<String> candidateAppointmentIds;
+  final String? selectedAppointmentId;
+  final String newPreferredDate;
+  final String newPreferredTime;
+  final DateTime updatedAt;
+
+  SchedulingManagementDraft copyWith({
+    ManagementPhase? phase,
+    List<String>? candidateAppointmentIds,
+    String? selectedAppointmentId,
+    bool clearSelected = false,
+    String? newPreferredDate,
+    String? newPreferredTime,
+  }) {
+    return SchedulingManagementDraft(
+      jid: jid,
+      phase: phase ?? this.phase,
+      candidateAppointmentIds:
+          candidateAppointmentIds ?? this.candidateAppointmentIds,
+      selectedAppointmentId: clearSelected
+          ? null
+          : (selectedAppointmentId ?? this.selectedAppointmentId),
+      newPreferredDate: newPreferredDate ?? this.newPreferredDate,
+      newPreferredTime: newPreferredTime ?? this.newPreferredTime,
+      updatedAt: DateTime.now(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'jid': jid,
+    'phase': phase.wireName,
+    'candidateAppointmentIds': candidateAppointmentIds,
+    if (selectedAppointmentId != null)
+      'selectedAppointmentId': selectedAppointmentId,
+    'newPreferredDate': newPreferredDate,
+    'newPreferredTime': newPreferredTime,
+    'updatedAt': updatedAt.toIso8601String(),
+  };
+}
+
+enum ManagementPhase {
+  idle,
+  cancelPick,
+  cancelConfirm,
+  reschedulePick,
+  rescheduleSlot;
+
+  String get wireName => switch (this) {
+    ManagementPhase.idle => 'idle',
+    ManagementPhase.cancelPick => 'cancel_pick',
+    ManagementPhase.cancelConfirm => 'cancel_confirm',
+    ManagementPhase.reschedulePick => 'reschedule_pick',
+    ManagementPhase.rescheduleSlot => 'reschedule_slot',
+  };
+
+  static ManagementPhase fromWire(String value) => switch (_normPhase(value)) {
+    'cancel_pick' => ManagementPhase.cancelPick,
+    'cancel_confirm' => ManagementPhase.cancelConfirm,
+    'reschedule_pick' => ManagementPhase.reschedulePick,
+    'reschedule_slot' => ManagementPhase.rescheduleSlot,
+    _ => ManagementPhase.idle,
+  };
+}
+
+String _normPhase(String raw) => raw.trim().toLowerCase().replaceAll(' ', '_');
+
 Map<String, List<TimeRange>> _workingHours(Object? value) {
   final fallback = AvailabilityConfig.defaultDental().workingHours;
   if (value is! Map) return fallback;

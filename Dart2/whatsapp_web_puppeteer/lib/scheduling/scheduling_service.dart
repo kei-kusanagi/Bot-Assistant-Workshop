@@ -14,10 +14,38 @@ class SchedulingService {
     required ConversationContext conversationContext,
   }) async {
     final lower = _normalize(message);
+    final managementDraft = await _store.loadManagementDraft(jid);
+    if (managementDraft.phase != ManagementPhase.idle) {
+      final reply = await _continueManagement(
+        jid: jid,
+        message: message,
+        lower: lower,
+        mgmt: managementDraft,
+      );
+      return reply;
+    }
+
+    if (_asksListAppointments(lower)) {
+      await _store.clearDraft(jid);
+      return _respondListFutureAppointments(jid);
+    }
+
+    if (_asksCancelAppointment(lower)) {
+      await _store.clearDraft(jid);
+      return _beginCancelFlow(jid, message, lower);
+    }
+
+    if (_asksRescheduleAppointment(lower)) {
+      await _store.clearDraft(jid);
+      return _beginRescheduleFlow(jid, message, lower);
+    }
+
     final draft = await _store.loadDraft(jid);
     final hasActiveDraft = _hasAnyDraftValue(draft);
-    final isScheduling = hasActiveDraft || _isSchedulingMessage(lower);
+    final isScheduling = hasActiveDraft || _isBookingMessage(lower);
     if (!isScheduling) return null;
+
+    await _store.clearManagementDraft(jid);
 
     final updatedDraft = _mergeDraft(
       draft: draft,
@@ -83,7 +111,417 @@ class SchedulingService {
         'Estado: confirmada en esta prueba local.';
   }
 
-  Future<List<DateTime>> availableSlots(DateTime date, {int limit = 3}) async {
+  Future<String?> _continueManagement({
+    required String jid,
+    required String message,
+    required String lower,
+    required SchedulingManagementDraft mgmt,
+  }) async {
+    switch (mgmt.phase) {
+      case ManagementPhase.cancelPick:
+        return _mgmtFinishCancelPick(jid, message, lower, mgmt);
+      case ManagementPhase.cancelConfirm:
+        return _mgmtFinishCancelConfirm(jid, lower, mgmt);
+      case ManagementPhase.reschedulePick:
+        return _mgmtFinishReschedulePick(jid, message, lower, mgmt);
+      case ManagementPhase.rescheduleSlot:
+        return _mgmtFinishRescheduleSlot(jid, message, lower, mgmt);
+      case ManagementPhase.idle:
+        return null;
+    }
+  }
+
+  Future<String?> _mgmtFinishCancelPick(
+    String jid,
+    String message,
+    String lower,
+    SchedulingManagementDraft mgmt,
+  ) async {
+    final picked =
+        _parseListSelection(message.trim()) ??
+        _parseInlineAppointmentIndexFromNormalized(lower);
+    if (picked == null ||
+        picked < 1 ||
+        picked > mgmt.candidateAppointmentIds.length) {
+      return 'No reconoci el numero. Responde con el numero de la lista que te mostre antes.';
+    }
+    final appointmentId = mgmt.candidateAppointmentIds[picked - 1];
+    final appt = await _store.appointmentByIdForJid(appointmentId, jid);
+    if (appt == null) {
+      await _store.clearManagementDraft(jid);
+      return 'Ya no encuentro esa cita. Escribe de nuevo cancelar si aun necesitas ayuda.';
+    }
+    await _store.saveManagementDraft(
+      mgmt.copyWith(
+        phase: ManagementPhase.cancelConfirm,
+        selectedAppointmentId: appointmentId,
+        candidateAppointmentIds: [appointmentId],
+      ),
+    );
+    return _confirmCancelPhrase(appt);
+  }
+
+  Future<String?> _mgmtFinishCancelConfirm(
+    String jid,
+    String lower,
+    SchedulingManagementDraft mgmt,
+  ) async {
+    if (_userDeclines(lower)) {
+      await _store.clearManagementDraft(jid);
+      return 'Perfecto, dejo la cita igual. ¿Necesitas algo mas?';
+    }
+    if (!_userConfirmsCancellation(lower)) {
+      return _confirmCancelPhraseOrHint(
+        mgmt.selectedAppointmentId == null
+            ? null
+            : await _store.appointmentByIdForJid(
+                mgmt.selectedAppointmentId!,
+                jid,
+              ),
+      );
+    }
+    final id = mgmt.selectedAppointmentId;
+    if (id == null) {
+      await _store.clearManagementDraft(jid);
+      return 'No tengo cual cita cancelar. Escribe cancelar mi cita de nuevo.';
+    }
+    await _store.cancelAppointmentById(appointmentId: id, jid: jid);
+    await _store.clearManagementDraft(jid);
+    return 'Listo: cancele esa cita en el calendario simulado. Si quieres otra, escribe agendar cita.';
+  }
+
+  Future<String?> _mgmtFinishReschedulePick(
+    String jid,
+    String message,
+    String lower,
+    SchedulingManagementDraft mgmt,
+  ) async {
+    final picked =
+        _parseListSelection(message.trim()) ??
+        _parseInlineAppointmentIndexFromNormalized(lower);
+    if (picked == null ||
+        picked < 1 ||
+        picked > mgmt.candidateAppointmentIds.length) {
+      return 'No reconoci el numero. Responde con el numero de la cita que quieres mover.';
+    }
+    final appointmentId = mgmt.candidateAppointmentIds[picked - 1];
+    final appt = await _store.appointmentByIdForJid(appointmentId, jid);
+    if (appt == null) {
+      await _store.clearManagementDraft(jid);
+      return 'Ya no encuentro esa cita. Intenta de nuevo con reprogramar cita.';
+    }
+    await _store.saveManagementDraft(
+      mgmt.copyWith(
+        phase: ManagementPhase.rescheduleSlot,
+        selectedAppointmentId: appointmentId,
+        candidateAppointmentIds: [appointmentId],
+        newPreferredDate: '',
+        newPreferredTime: '',
+      ),
+    );
+    return 'Moveremos: ${_formatAppointmentLine(1, appt)}\n'
+        '¿Que **nuevo** dia y horario prefieres? (puedes decir por ejemplo *martes 4pm* o *2026-05-12 16:00*).';
+  }
+
+  Future<String?> _mgmtFinishRescheduleSlot(
+    String jid,
+    String message,
+    String lower,
+    SchedulingManagementDraft mgmt,
+  ) async {
+    if (_userDeclines(lower)) {
+      await _store.clearManagementDraft(jid);
+      return 'De acuerdo, dejo la cita en su horario original.';
+    }
+    final id = mgmt.selectedAppointmentId;
+    if (id == null) {
+      await _store.clearManagementDraft(jid);
+      return 'Hubo confusion con la cita. Escribe reprogramar cita otra vez.';
+    }
+
+    var newDateStr = mgmt.newPreferredDate;
+    var newTimeStr = mgmt.newPreferredTime;
+    final parsedDate = _parsePreferredDate(message);
+    final parsedTime = _parsePreferredTime(message);
+    if (parsedDate != null) {
+      newDateStr = _isoDate(parsedDate);
+    }
+    if (parsedTime != null) {
+      newTimeStr = parsedTime;
+    }
+
+    await _store.saveManagementDraft(
+      mgmt.copyWith(newPreferredDate: newDateStr, newPreferredTime: newTimeStr),
+    );
+
+    final merged = mgmt.copyWith(
+      newPreferredDate: newDateStr,
+      newPreferredTime: newTimeStr,
+    );
+    final start = _newDateTimeFromMgmt(merged);
+    if (start == null) {
+      return 'Necesito el **dia** nuevo y la **hora** (por ejemplo viernes a las 3 de la tarde).';
+    }
+    final end = start.add(await _slotDuration());
+    if (!await isSlotAvailable(start, end, ignoreAppointmentId: id)) {
+      final alts = await availableSlots(
+        start,
+        limit: 3,
+        ignoreAppointmentId: id,
+      );
+      if (alts.isEmpty) {
+        return 'Ese horario no esta libre. ¿Probamos otro dia?';
+      }
+      return 'Ese horario no esta disponible. Opciones libres:\n${_formatSlotList(alts)}\n¿Cuál te sirve?';
+    }
+
+    try {
+      final appt = await _store.rescheduleAppointment(
+        oldAppointmentId: id,
+        jid: jid,
+        newStart: start,
+        newEnd: end,
+      );
+      await _store.clearManagementDraft(jid);
+      return 'Cita reprogramada en el calendario simulado:\n'
+          'Servicio: ${appt.service}\n'
+          'Nombre: ${appt.name}\n'
+          'Nueva fecha: ${_formatDate(appt.start)}\n'
+          'Nueva hora: ${_formatTime(appt.start)}';
+    } on StateError catch (e) {
+      await _store.clearManagementDraft(jid);
+      return 'No pude reprogramar: $e';
+    }
+  }
+
+  String _confirmCancelPhrase(Appointment appt) {
+    return 'Voy a cancelar esta cita:\n${_formatAppointmentLine(1, appt)}\n'
+        'Para confirmar escribe *si cancelar*. Si prefieres conservarla, escribe *no*.';
+  }
+
+  String _confirmCancelPhraseOrHint(Appointment? appt) {
+    if (appt != null) return _confirmCancelPhrase(appt);
+    return 'Para confirmar la cancelacion escribe *si cancelar*. Para conservar la cita escribe *no*.';
+  }
+
+  /// Si el mensaje incluye nueva fecha y hora, reprograma de un solo paso.
+  Future<String?> _attemptRescheduleOneShot({
+    required String jid,
+    required String appointmentId,
+    required String message,
+  }) async {
+    final parsedDate = _parsePreferredDate(message);
+    final parsedTime = _parsePreferredTime(message);
+    if (parsedDate == null || parsedTime == null) return null;
+    final clock = _parseClock(parsedTime);
+    if (clock == null) return null;
+    final start = DateTime(
+      parsedDate.year,
+      parsedDate.month,
+      parsedDate.day,
+      clock.hour,
+      clock.minute,
+    );
+    final end = start.add(await _slotDuration());
+    if (!await isSlotAvailable(
+      start,
+      end,
+      ignoreAppointmentId: appointmentId,
+    )) {
+      final alts = await availableSlots(
+        start,
+        limit: 3,
+        ignoreAppointmentId: appointmentId,
+      );
+      await _store.saveManagementDraft(
+        SchedulingManagementDraft(
+          jid: jid,
+          phase: ManagementPhase.rescheduleSlot,
+          candidateAppointmentIds: [appointmentId],
+          selectedAppointmentId: appointmentId,
+          newPreferredDate: '',
+          newPreferredTime: '',
+          updatedAt: DateTime.now(),
+        ),
+      );
+      if (alts.isEmpty) {
+        return 'Ese horario no esta libre para reprogramar.\n'
+            '¿Me dices otro dia y hora? Te dejo en el paso de reprogramacion.';
+      }
+      return 'Ese horario no esta disponible. Opciones libres:\n'
+          '${_formatSlotList(alts)}\n¿Cuál te sirve? (Con fecha y hora en tu respuesta.)';
+    }
+    try {
+      final appt = await _store.rescheduleAppointment(
+        oldAppointmentId: appointmentId,
+        jid: jid,
+        newStart: start,
+        newEnd: end,
+      );
+      await _store.clearManagementDraft(jid);
+      return 'Cita reprogramada en el calendario simulado:\n'
+          'Servicio: ${appt.service}\n'
+          'Nombre: ${appt.name}\n'
+          'Nueva fecha: ${_formatDate(appt.start)}\n'
+          'Nueva hora: ${_formatTime(appt.start)}';
+    } on StateError catch (e) {
+      await _store.clearManagementDraft(jid);
+      return 'No pude reprogramar: $e';
+    }
+  }
+
+  Future<String> _beginCancelFlow(
+    String jid,
+    String message,
+    String normalizedLower,
+  ) async {
+    final list = await _store.futureAppointmentsForJid(jid);
+    if (list.isEmpty) {
+      return 'No tengo citas futuras activas registradas para este chat.';
+    }
+    if (list.length > 1) {
+      final idx = _parseInlineAppointmentIndexFromNormalized(normalizedLower);
+      if (idx != null && idx >= 1 && idx <= list.length) {
+        final a = list[idx - 1];
+        await _store.saveManagementDraft(
+          SchedulingManagementDraft(
+            jid: jid,
+            phase: ManagementPhase.cancelConfirm,
+            candidateAppointmentIds: [a.id],
+            selectedAppointmentId: a.id,
+            newPreferredDate: '',
+            newPreferredTime: '',
+            updatedAt: DateTime.now(),
+          ),
+        );
+        return '${_confirmCancelPhrase(a)}\n'
+            '(Veo que referiste la cita *$idx*.)';
+      }
+      await _store.saveManagementDraft(
+        SchedulingManagementDraft(
+          jid: jid,
+          phase: ManagementPhase.cancelPick,
+          candidateAppointmentIds: list.map((e) => e.id).toList(),
+          selectedAppointmentId: null,
+          newPreferredDate: '',
+          newPreferredTime: '',
+          updatedAt: DateTime.now(),
+        ),
+      );
+      return '${_numberedAppointmentsHeading(list, 'Tienes varias citas. ¿Cuál quieres **cancelar**? Responde con el numero:\n')}\n'
+          'Tip: también puedes decir por ejemplo *cancelar cita 2*.';
+    }
+    final a = list.first;
+    await _store.saveManagementDraft(
+      SchedulingManagementDraft(
+        jid: jid,
+        phase: ManagementPhase.cancelConfirm,
+        candidateAppointmentIds: [a.id],
+        selectedAppointmentId: a.id,
+        newPreferredDate: '',
+        newPreferredTime: '',
+        updatedAt: DateTime.now(),
+      ),
+    );
+    return _confirmCancelPhrase(a);
+  }
+
+  Future<String> _beginRescheduleFlow(
+    String jid,
+    String message,
+    String normalizedLower,
+  ) async {
+    final list = await _store.futureAppointmentsForJid(jid);
+    if (list.isEmpty) {
+      return 'No hay citas futuras para mover. ¿Quieres agendar una nueva?';
+    }
+    if (list.length > 1) {
+      final idx = _parseInlineAppointmentIndexFromNormalized(normalizedLower);
+      if (idx != null && idx >= 1 && idx <= list.length) {
+        final chosen = list[idx - 1];
+        final oneShot = await _attemptRescheduleOneShot(
+          jid: jid,
+          appointmentId: chosen.id,
+          message: message,
+        );
+        if (oneShot != null) return oneShot;
+
+        await _store.saveManagementDraft(
+          SchedulingManagementDraft(
+            jid: jid,
+            phase: ManagementPhase.rescheduleSlot,
+            candidateAppointmentIds: [chosen.id],
+            selectedAppointmentId: chosen.id,
+            newPreferredDate: '',
+            newPreferredTime: '',
+            updatedAt: DateTime.now(),
+          ),
+        );
+        return 'Muevo la **cita $idx**:\n${_formatAppointmentLine(1, chosen)}\n'
+            '¿Que **nuevo** dia y horario prefieres?';
+      }
+      await _store.saveManagementDraft(
+        SchedulingManagementDraft(
+          jid: jid,
+          phase: ManagementPhase.reschedulePick,
+          candidateAppointmentIds: list.map((e) => e.id).toList(),
+          selectedAppointmentId: null,
+          newPreferredDate: '',
+          newPreferredTime: '',
+          updatedAt: DateTime.now(),
+        ),
+      );
+      return '${_numberedAppointmentsHeading(list, 'Tienes varias citas. ¿Cuál quieres **reprogramar**? Responde con el numero:\n')}\n'
+          'Tip: *reprogramar cita 2* o en un solo mensaje *reprogramar cita 2 martes 4pm*.';
+    }
+    final a = list.first;
+    final oneShot = await _attemptRescheduleOneShot(
+      jid: jid,
+      appointmentId: a.id,
+      message: message,
+    );
+    if (oneShot != null) return oneShot;
+
+    await _store.saveManagementDraft(
+      SchedulingManagementDraft(
+        jid: jid,
+        phase: ManagementPhase.rescheduleSlot,
+        candidateAppointmentIds: [a.id],
+        selectedAppointmentId: a.id,
+        newPreferredDate: '',
+        newPreferredTime: '',
+        updatedAt: DateTime.now(),
+      ),
+    );
+    return 'Moveremos: ${_formatAppointmentLine(1, a)}\n'
+        '¿Que **nuevo** dia y horario prefieres?';
+  }
+
+  Future<String> _respondListFutureAppointments(String jid) async {
+    final list = await _store.futureAppointmentsForJid(jid);
+    if (list.isEmpty) {
+      return 'No tengo citas futuras registradas para este chat.';
+    }
+    return _numberedAppointmentsHeading(list, 'Tus proximas citas:\n');
+  }
+
+  String _numberedAppointmentsHeading(List<Appointment> list, String header) {
+    final buf = StringBuffer(header);
+    for (var i = 0; i < list.length; i++) {
+      buf.writeln(_formatAppointmentLine(i + 1, list[i]));
+    }
+    return buf.toString().trim();
+  }
+
+  String _formatAppointmentLine(int index, Appointment a) {
+    return '$index. ${a.service} - ${_formatDate(a.start)} ${_formatTime(a.start)} (${a.name})';
+  }
+
+  Future<List<DateTime>> availableSlots(
+    DateTime date, {
+    int limit = 3,
+    String? ignoreAppointmentId,
+  }) async {
     final availability = await _store.loadAvailability();
     final dayKey = _weekdayKey(date);
     final ranges = availability.workingHours[dayKey] ?? const <TimeRange>[];
@@ -95,7 +533,9 @@ class SchedulingService {
 
     final now = DateTime.now();
     final minStart = now.add(Duration(hours: availability.minNoticeHours));
-    final events = await _blockingEvents();
+    final events = await _blockingEvents(
+      ignoreAppointmentId: ignoreAppointmentId,
+    );
     final slots = <DateTime>[];
     for (final range in ranges) {
       final startParts = _parseClock(range.start);
@@ -130,8 +570,16 @@ class SchedulingService {
     return slots;
   }
 
-  Future<bool> isSlotAvailable(DateTime start, DateTime end) async {
-    final slots = await availableSlots(start, limit: 100);
+  Future<bool> isSlotAvailable(
+    DateTime start,
+    DateTime end, {
+    String? ignoreAppointmentId,
+  }) async {
+    final slots = await availableSlots(
+      start,
+      limit: 100,
+      ignoreAppointmentId: ignoreAppointmentId,
+    );
     return slots.any((slot) => slot.isAtSameMomentAs(start));
   }
 
@@ -140,13 +588,109 @@ class SchedulingService {
     return Duration(minutes: availability.slotMinutes);
   }
 
-  Future<List<CalendarEvent>> _blockingEvents() async {
+  Future<List<CalendarEvent>> _blockingEvents({
+    String? ignoreAppointmentId,
+  }) async {
     final events = await _store.loadCalendarEvents();
     return events
         .where((event) => event.status != 'cancelled')
         .where((event) => event.type == 'appointment' || event.type == 'block')
+        .where(
+          (event) =>
+              ignoreAppointmentId == null ||
+              event.appointmentId != ignoreAppointmentId,
+        )
         .toList();
   }
+}
+
+DateTime? _newDateTimeFromMgmt(SchedulingManagementDraft m) {
+  if (m.newPreferredDate.isEmpty || m.newPreferredTime.isEmpty) return null;
+  final date = DateTime.tryParse(m.newPreferredDate);
+  final clock = _parseClock(m.newPreferredTime);
+  if (date == null || clock == null) return null;
+  return DateTime(date.year, date.month, date.day, clock.hour, clock.minute);
+}
+
+int? _parseListSelection(String raw) => int.tryParse(raw);
+
+/// Reconoce "cita 2", "la 2", "opcion 3", etc. Sobre texto ya normalizado [_normalize].
+int? _parseInlineAppointmentIndexFromNormalized(String normalizedLower) {
+  final n = normalizedLower.trim();
+  if (n.isEmpty) return null;
+  final patterns = <RegExp>[
+    RegExp(r'\bcita\s+(?:numero\s+)?(\d{1,2})\b'),
+    RegExp(r'\bopcion\s+(\d{1,2})\b'),
+    RegExp(r'\bla\s+(\d{1,2})\b'),
+    RegExp(r'\bel\s+(\d{1,2})\b'),
+    RegExp(r'\bnumero\s+(\d{1,2})\b'),
+  ];
+  for (final re in patterns) {
+    final m = re.firstMatch(n);
+    if (m != null) {
+      final v = int.tryParse(m.group(1)!);
+      if (v != null && v >= 1 && v <= 50) return v;
+    }
+  }
+  return null;
+}
+
+bool _userDeclines(String lower) {
+  final t = lower.trim();
+  return t == 'no' ||
+      t.startsWith('no ') ||
+      t.contains('mejor no') ||
+      t.contains('dejala') ||
+      t.contains('déjala') ||
+      t.contains('olvida') ||
+      t.contains('cancela eso no');
+}
+
+bool _userConfirmsCancellation(String lower) {
+  return lower.contains('si cancelar') ||
+      lower.contains('sí cancelar') ||
+      lower.contains('si, cancelar') ||
+      lower.contains('sí, cancelar') ||
+      lower.contains('confirmo cancelar') ||
+      lower.contains('confirmo la cancelacion') ||
+      lower.contains('confirmo la cancelación') ||
+      lower.contains('adelante cancela') ||
+      lower.contains('si por favor cancela') ||
+      lower.contains('sí por favor cancela');
+}
+
+bool _asksListAppointments(String lower) {
+  return lower.contains('mis citas') ||
+      lower.contains('mi cita') ||
+      lower.contains('proxima cita') ||
+      lower.contains('próxima cita') ||
+      lower.contains('que citas tengo') ||
+      lower.contains('qué citas tengo') ||
+      lower.contains('citas activas');
+}
+
+bool _asksCancelAppointment(String lower) {
+  final mentionsAppointment = lower.contains('cita') || lower.contains('visit');
+  if (mentionsAppointment &&
+      (lower.contains('cancel') ||
+          lower.contains('anular') ||
+          lower.contains('baja'))) {
+    return true;
+  }
+  return lower.contains('dar de baja mi cita') ||
+      lower.contains('baja la cita');
+}
+
+bool _asksRescheduleAppointment(String lower) {
+  return lower.contains('reprogram') ||
+      lower.contains('reagendar') ||
+      lower.contains('cambiar la cita') ||
+      lower.contains('cambiar mi cita') ||
+      lower.contains('cambiar el horario') ||
+      lower.contains('cambiar horario') ||
+      lower.contains('cambiar la fecha') ||
+      lower.contains('mover mi cita') ||
+      lower.contains('mover la cita');
 }
 
 enum _MissingField { name, service, date, time }
@@ -214,7 +758,7 @@ bool _hasAnyDraftValue(SchedulingDraft draft) {
       draft.preferredTime.isNotEmpty;
 }
 
-bool _isSchedulingMessage(String lower) {
+bool _isBookingMessage(String lower) {
   return lower.contains('cita') ||
       lower.contains('agendar') ||
       lower.contains('agenda') ||
@@ -229,7 +773,9 @@ bool _asksForAvailability(String lower) {
   return lower.contains('disponibilidad') ||
       lower.contains('disponible') ||
       lower.contains('que dias') ||
+      lower.contains('qué dias') ||
       lower.contains('que horarios') ||
+      lower.contains('qué horarios') ||
       lower.contains('horarios libres') ||
       lower.contains('espacio');
 }

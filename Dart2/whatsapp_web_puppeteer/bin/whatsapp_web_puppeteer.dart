@@ -226,7 +226,10 @@ Future<_BotRunSignal> _runBotSession({
       'Bot activo. Desde otro numero escribe al WhatsApp vinculado.',
     );
     stdout.writeln(
-      'Las respuestas ahora salen de Ollama, no de if/else fijos.',
+      'Agenda y datos del negocio (horario, ubicacion, saludo corto) pueden responder sin Ollama;',
+    );
+    stdout.writeln(
+      'el resto del charla usa Ollama cuando este disponible en su URL.',
     );
     stdout.writeln(
       'Deja esta terminal abierta. Pulsa Ctrl+C para cerrar Chrome y salir.',
@@ -239,6 +242,7 @@ Future<_BotRunSignal> _runBotSession({
   } catch (error, stackTrace) {
     stderr.writeln('');
     stderr.writeln('Error iniciando el bot: $error');
+    _explainWhatsappStartupFailure(error, sessionDir.path);
     if (_envFlag('DART2_DEBUG_STACK')) {
       stderr.writeln(stackTrace);
     }
@@ -418,6 +422,46 @@ bool _isSupportedIncomingChat(String jid) {
       jid.endsWith('@s.whatsapp.net');
 }
 
+/// WhatsApp puede fallar antes de llegar al listener; el paquete a veces solo
+/// expone un mensaje corto en inglés. Aqui damos pasos concretos en español.
+void _explainWhatsappStartupFailure(Object error, String sessionDirectory) {
+  final lower = error.toString().toLowerCase();
+  if (!lower.contains('phone not connected')) return;
+
+  stderr.writeln('');
+  stderr.writeln(
+    '[ayuda] "Phone not connected" = WhatsApp no logro validar el telefono.',
+  );
+  stderr.writeln(
+    'No tiene que ver con Ollama; es la sesion multi-dispositivo.',
+  );
+  stderr.writeln('');
+  stderr.writeln('Prueba en este orden:');
+  stderr.writeln(
+    '  1) Celular con datos/WiFi estables; abre WhatsApp un momento.',
+  );
+  stderr.writeln(
+    '  2) WhatsApp > Dispositivos vinculados: si hay un Chrome obsoleto, desvinculalo.',
+  );
+  stderr.writeln(
+    '  3) Si te sacaron de sesion o hubo corte de linea, borra la carpeta de sesion del bot y vuelve a escanear el QR:',
+  );
+  stderr.writeln('     $sessionDirectory');
+  stderr.writeln(
+    '  4) Modo headless a veces complica el primer par: en .env pon HEADLESS_CHROME=0 y escanea el QR en la ventana.',
+  );
+  stderr.writeln('');
+}
+
+bool _isAiBackendUnreachable(Object error) {
+  final lower = error.toString().toLowerCase();
+  return lower.contains('socketexception') ||
+      lower.contains('clientexception') ||
+      lower.contains('connection refused') ||
+      lower.contains('rechazó la conexión') ||
+      lower.contains('failed host lookup');
+}
+
 bool _isBrowserSessionClosedError(Object error) {
   final message = error.toString().toLowerCase();
   return message.contains('session closed') ||
@@ -426,6 +470,14 @@ bool _isBrowserSessionClosedError(Object error) {
       message.contains('browser has disconnected') ||
       message.contains('websocket url not found');
 }
+
+const _offlineAiReply =
+    'Por ahora el asistente con IA local (Ollama) no esta disponible. Igual puedo ayudarte: '
+    'escribe "quiero una cita" o pregunta por horario y ubicacion. Cuando prendas Ollama, '
+    'volvere a tener respuestas mas flexibles.';
+
+const _genericReplyError =
+    'Hubo un problema tecnico al responder. Intenta de nuevo en un momento; si es urgente vuelve a escribir.';
 
 Future<void> _generateAndSendReply(
   WhatsappClient client,
@@ -477,19 +529,22 @@ Future<void> _generateAndSendReply(
     stdout.writeln('[TX] $to: $reply');
   } catch (error) {
     if (_isBrowserSessionClosedError(error)) rethrow;
-    stderr.writeln('[TX-ERROR] No pude responder a $to: $error');
+    final offline = _isAiBackendUnreachable(error);
+    stderr.writeln(
+      offline
+          ? '[ia-offline] Sin respuesta de Ollama; avisando por WhatsApp al usuario.'
+          : '[TX-ERROR] No pude responder a $to: $error',
+    );
+    final fallbackMsg = offline ? _offlineAiReply : _genericReplyError;
     try {
       await _sendReply(
         client,
         to: to,
-        message:
-            'Por ahora no pude consultar la IA local. Revisa que Ollama este corriendo y que el modelo este instalado.',
+        message: fallbackMsg,
         replyMessageId: id,
       );
-      await conversationStore.saveAssistantMessage(
-        to,
-        'Por ahora no pude consultar la IA local. Revisa que Ollama este corriendo y que el modelo este instalado.',
-      );
+      await conversationStore.saveAssistantMessage(to, fallbackMsg);
+      stdout.writeln('[TX] $to: $fallbackMsg');
     } catch (fallbackError) {
       if (_isBrowserSessionClosedError(fallbackError)) rethrow;
       stderr.writeln(

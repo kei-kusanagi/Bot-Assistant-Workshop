@@ -25,6 +25,7 @@
     "Los precios pueden cambiar sin previo aviso."
   ],
   "responseTemplates": {
+    "greeting": "Hola, gracias por escribir a {businessName}. ¿En que te ayudo? Puedo orientarte con horario, ubicacion o agendar una cita.",
     "location": "Estamos ubicados en {location}",
     "schedule": "Nuestro horario es: {schedule}",
     "services": "{businessName} es un {businessType}. Ofrecemos: {services}.",

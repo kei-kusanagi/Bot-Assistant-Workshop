@@ -20,9 +20,18 @@ class AIService {
     }
 
     final profile = businessProfile ?? BusinessProfile.empty();
+    final lower = cleanMessage.toLowerCase();
+
     final directAnswer = _directBusinessAnswer(cleanMessage, profile);
     if (directAnswer != null) return directAnswer;
 
+    if (_isStandaloneGreeting(lower, cleanMessage)) {
+      final templated = _renderTemplate(
+        profile.responseTemplates['greeting'],
+        profile,
+      );
+      return templated ?? _defaultGreeting(profile);
+    }
     final prompt =
         '''
 $_systemPrompt
@@ -179,6 +188,60 @@ bool _asksForBusinessType(String lower) {
       lower.contains('medicina familiar') ||
       lower.contains('medicina preventiva') ||
       lower.contains('consultorio de medicina');
+}
+
+/// Saludo corto sin pedir datos de negocio; evita llamar al LLM en "hola que tal".
+bool _isStandaloneGreeting(String lower, String original) {
+  if (original.length > 72) return false;
+  if (_mentionsNonGreetingTopics(lower)) return false;
+  final compact = lower.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (compact.isEmpty) return false;
+  return RegExp(
+    r'^(hola|hey|buen[oa]s(\s+(tardes?|noches?|dias?|días?))?|que tal|qué tal|saludos|muy buen[oa]s)(\s+[a-záéíóúñü.!¡?]+)*$',
+  ).hasMatch(compact);
+}
+
+bool _mentionsNonGreetingTopics(String lower) {
+  return lower.contains('agendar') ||
+      lower.contains('cita') ||
+      lower.contains('reserv') ||
+      lower.contains('disponib') ||
+      lower.contains('precio') ||
+      lower.contains('costo') ||
+      lower.contains('cuanto') ||
+      lower.contains('cuánto') ||
+      lower.contains('donde') ||
+      lower.contains('dónde') ||
+      lower.contains('ubic') ||
+      lower.contains('direcc') ||
+      lower.contains('horario') ||
+      lower.contains('servicio') ||
+      lower.contains('valoracion') ||
+      lower.contains('valoración') ||
+      lower.contains('limpieza') ||
+      lower.contains('endodon') ||
+      lower.contains('extracc') ||
+      lower.contains('blanqueam') ||
+      lower.contains('ortodon') ||
+      lower.contains('resina') ||
+      lower.contains('protesis') ||
+      lower.contains('prótesis') ||
+      lower.contains('urgencia') ||
+      lower.contains('dolor') ||
+      lower.contains('telefono') ||
+      lower.contains('teléfono') ||
+      lower.contains('contacto') ||
+      lower.contains('correo') ||
+      lower.contains('email') ||
+      lower.contains('@');
+}
+
+String _defaultGreeting(BusinessProfile profile) {
+  final name = profile.businessName.trim();
+  if (name.isEmpty) {
+    return 'Hola, gracias por escribirnos. Puedo orientarte con horario, ubicacion o agendar una cita; dime que necesitas.';
+  }
+  return 'Hola, gracias por escribir a $name. Puedo ayudarte con horario, ubicacion o agendar una cita; dime en que te puedo apoyar.';
 }
 
 String _normalize(String value) {
