@@ -25,12 +25,19 @@ class AIService {
     final directAnswer = _directBusinessAnswer(cleanMessage, profile);
     if (directAnswer != null) return directAnswer;
 
+    final identityAnswer = _directIdentityAnswer(lower, conversationContext);
+    if (identityAnswer != null) return identityAnswer;
+
+    final nombreUsuario = conversationContext?.facts['nombre']?.trim();
+
     if (_isStandaloneGreeting(lower, cleanMessage)) {
       final templated = _renderTemplate(
         profile.responseTemplates['greeting'],
         profile,
+        userName: nombreUsuario ?? '',
       );
-      return templated ?? _defaultGreeting(profile);
+      return templated ??
+          _defaultGreeting(profile, userFirstName: nombreUsuario);
     }
     final prompt =
         '''
@@ -122,6 +129,7 @@ String? _renderTemplate(
   BusinessProfile profile, {
   String service = '',
   String price = '',
+  String userName = '',
 }) {
   if (template == null || template.trim().isEmpty) return null;
   return template
@@ -135,7 +143,20 @@ String? _renderTemplate(
       .replaceAll('{schedule}', profile.schedule)
       .replaceAll('{location}', profile.location)
       .replaceAll('{contact}', profile.contact)
+      .replaceAll('{userName}', userName)
       .trim();
+}
+
+/// Preguntas tipo "¿saben cómo me llamo?" con respuesta desde memoria local (sin LLM).
+String? _directIdentityAnswer(String lower, ConversationContext? context) {
+  if (context == null || !_asksWhoAmI(lower)) return null;
+  final nombre = context.facts['nombre']?.trim();
+  if (nombre != null && nombre.isNotEmpty) {
+    return 'Si: en esta conversacion quedó tu nombre como *$nombre*. '
+        'Si quieres corregirlo, escribe por ejemplo *me llamo ...*.';
+  }
+  return 'Aun no tengo guardado tu nombre en esta conversacion. '
+      'Escribe *me llamo* y como prefieres que te llamemos.';
 }
 
 String _formatServicePrices(BusinessProfile profile) {
@@ -190,6 +211,21 @@ bool _asksForBusinessType(String lower) {
       lower.contains('consultorio de medicina');
 }
 
+bool _asksWhoAmI(String lower) {
+  final n = _normalize(lower);
+  return n.contains('sabes quien soy') ||
+      n.contains('saben quien soy') ||
+      n.contains('quien soy') ||
+      n.contains('quien sos') ||
+      n.contains('como me llamo') ||
+      n.contains('como te llamas') ||
+      n.contains('mi nombre') ||
+      n.contains('recuerdas mi nombre') ||
+      n.contains('recuerdas como me llamo') ||
+      n.contains('te acuerdas de mi nombre') ||
+      (n.contains('sabes') && n.contains('quien') && n.contains('yo'));
+}
+
 /// Saludo corto sin pedir datos de negocio; evita llamar al LLM en "hola que tal".
 bool _isStandaloneGreeting(String lower, String original) {
   if (original.length > 72) return false;
@@ -199,6 +235,14 @@ bool _isStandaloneGreeting(String lower, String original) {
   return RegExp(
     r'^(hola|hey|buen[oa]s(\s+(tardes?|noches?|dias?|días?))?|que tal|qué tal|saludos|muy buen[oa]s)(\s+[a-záéíóúñü.!¡?]+)*$',
   ).hasMatch(compact);
+}
+
+/// Saludo suelto tipo "hola" / "buenas" (misma heuristica que [_isStandaloneGreeting]).
+bool isStandaloneUserGreeting(String message) {
+  final trimmed = message.trim();
+  if (trimmed.isEmpty) return false;
+  final lower = trimmed.toLowerCase();
+  return _isStandaloneGreeting(lower, trimmed);
 }
 
 bool _mentionsNonGreetingTopics(String lower) {
@@ -236,12 +280,24 @@ bool _mentionsNonGreetingTopics(String lower) {
       lower.contains('@');
 }
 
-String _defaultGreeting(BusinessProfile profile) {
-  final name = profile.businessName.trim();
-  if (name.isEmpty) {
-    return 'Hola, gracias por escribirnos. Puedo orientarte con horario, ubicacion o agendar una cita; dime que necesitas.';
+String _defaultGreeting(BusinessProfile profile, {String? userFirstName}) {
+  final client = userFirstName?.trim();
+  final biz = profile.businessName.trim();
+  final intro =
+      'Soy la asistente virtual. ¿En que te ayudo hoy? '
+      'Puedo orientarte con horario, ubicacion o agendar una cita.';
+
+  if (client != null && client.isNotEmpty) {
+    if (biz.isEmpty) {
+      return 'Hola $client, gracias por escribirnos. $intro';
+    }
+    return 'Hola $client, gracias por escribir a $biz. $intro';
   }
-  return 'Hola, gracias por escribir a $name. Puedo ayudarte con horario, ubicacion o agendar una cita; dime en que te puedo apoyar.';
+
+  if (biz.isEmpty) {
+    return 'Hola, gracias por escribirnos. $intro';
+  }
+  return 'Hola, gracias por escribir a $biz. $intro';
 }
 
 String _normalize(String value) {

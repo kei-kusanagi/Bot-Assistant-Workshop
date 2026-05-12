@@ -2,6 +2,20 @@ import 'package:whatsapp_web_puppeteer/ai/ai_context.dart';
 import 'package:whatsapp_web_puppeteer/scheduling/local_scheduling_store.dart';
 import 'package:whatsapp_web_puppeteer/scheduling/scheduling_models.dart';
 
+/// Ancla la agenda cargada desde seed (mayo demo) incluso si el reloj del PC no coincide.
+const _kDemoCalendarYear = 2026;
+
+enum _AvailScope { thisWeek, restOfMay }
+
+enum _DayPeriod { morning, afternoon, evening }
+
+class _AvailWindow {
+  const _AvailWindow({required this.start, required this.end});
+
+  final DateTime start;
+  final DateTime end;
+}
+
 class SchedulingService {
   SchedulingService({required LocalSchedulingStore store}) : _store = store;
 
@@ -42,7 +56,12 @@ class SchedulingService {
 
     final draft = await _store.loadDraft(jid);
     final hasActiveDraft = _hasAnyDraftValue(draft);
-    final isScheduling = hasActiveDraft || _isBookingMessage(lower);
+    final availFollowUp =
+        !_asksForAvailability(lower) &&
+        _looksLikePeriodRefinement(lower, conversationContext) &&
+        _lastAssistantAvailScope(conversationContext) != null;
+    final isScheduling =
+        hasActiveDraft || _isBookingMessage(lower) || availFollowUp;
     if (!isScheduling) return null;
 
     await _store.clearManagementDraft(jid);
@@ -54,17 +73,14 @@ class SchedulingService {
       conversationContext: conversationContext,
     );
 
-    if (_asksForAvailability(lower)) {
+    if (_asksForAvailability(lower) || availFollowUp) {
       await _store.saveDraft(updatedDraft);
-      final date = _parsePreferredDate(message) ?? _dateFromDraft(updatedDraft);
-      if (date == null) {
-        return 'Claro. ¿Para que dia te gustaria revisar disponibilidad?';
-      }
-      final slots = await availableSlots(date, limit: 3);
-      if (slots.isEmpty) {
-        return 'No veo horarios libres para ${_formatDate(date)}. ¿Quieres que revise otro dia?';
-      }
-      return 'Tengo estos horarios libres para ${_formatDate(date)}:\n${_formatSlotList(slots)}\n¿Cuál prefieres?';
+      return _handleAvailabilityInquiry(
+        message: message,
+        lower: lower,
+        updatedDraft: updatedDraft,
+        conversationContext: conversationContext,
+      );
     }
 
     final missing = _missingFields(updatedDraft);
@@ -602,6 +618,394 @@ class SchedulingService {
         )
         .toList();
   }
+
+  /// Disponibilidad vaga vs dia concreto; marca franjas mañana/tarde/noche.
+  Future<String> _handleAvailabilityInquiry({
+    required String message,
+    required String lower,
+    required SchedulingDraft updatedDraft,
+    required ConversationContext conversationContext,
+  }) async {
+    final period = _parseDayPeriod(lower);
+    final preferredDate =
+        _parsePreferredDate(message) ?? _dateFromDraft(updatedDraft);
+
+    if (preferredDate != null) {
+      return _replySlotsForPreferredDay(preferredDate, period);
+    }
+
+    final lastScope =
+        period != null && _looksLikePeriodRefinement(lower, conversationContext)
+        ? _lastAssistantAvailScope(conversationContext)
+        : null;
+
+    if (lastScope != null && period != null) {
+      final range = _availDateRange(lastScope);
+      return _replyConcreteSlotsAfterPeriod(range, period);
+    }
+
+    final scope = _inferAvailScope(lower);
+    final range = _availDateRange(scope);
+    final ranked = await _rankWeekdaysByFreeSlots(
+      range.start,
+      range.end,
+      period: period,
+    );
+
+    return await _formatBroadAvailabilityReply(
+      ranked: ranked,
+      scope: scope,
+      window: range,
+      appliedPeriod: period,
+    );
+  }
+
+  Future<String> _replySlotsForPreferredDay(
+    DateTime date,
+    _DayPeriod? period,
+  ) async {
+    var slots = await availableSlots(date, limit: 100);
+    slots = _filterSlotsByPeriod(slots, period);
+    final top = slots.take(3).toList();
+    if (top.isEmpty) {
+      return 'No veo huecos disponibles${_periodHintSpanish(period)} para '
+          '${_formatDate(date)}. ¿Probamos otro dia o prefieres otra franja '
+          '(mañana antes de las 14:00, tarde 14:00-18:00, noche después de las 18:00)?';
+    }
+    final franja = switch (period) {
+      null => '',
+      _DayPeriod.morning => ' (priorizando la mañana)',
+      _DayPeriod.afternoon => ' (priorizando la tarde)',
+      _DayPeriod.evening => ' (priorizando la noche)',
+    };
+    return 'Tengo estos horarios libres para ${_formatDate(date)}$franja:\n'
+        '${_formatSlotList(top)}\n'
+        '¿Cuál prefieres para reservarlo?';
+  }
+
+  Future<String> _replyConcreteSlotsAfterPeriod(
+    _AvailWindow window,
+    _DayPeriod period,
+  ) async {
+    final ranked = await _rankWeekdaysByFreeSlots(
+      window.start,
+      window.end,
+      period: period,
+    );
+    if (ranked.isEmpty) {
+      return 'Del ${_formatDate(window.start)} al ${_formatDate(window.end)}, '
+          'casi no hay huecos${_periodHintSpanish(period)}.\n'
+          '¿Quieres probar otra franja (mañana/tarde/noche) o mencionar un dia '
+          'concreto?';
+    }
+
+    final topDays = ranked.take(3).map((e) => e.day).toList();
+    final picks = await _collectSampleSlotsLines(
+      topDays,
+      period,
+      maxEntries: 5,
+    );
+    if (picks.isEmpty) {
+      return 'No encuentro ejemplos concretos${_periodHintSpanish(period)} '
+          'entre el ${_formatDate(window.start)} y el ${_formatDate(window.end)}.';
+    }
+
+    final head =
+        '${_periodPreferenceLead(period)}, estos huecos siguen libres'
+        '${_periodHintSpanish(period)} dentro del ${_formatHumanSpan(window)}:';
+    return '$head\n${picks.take(5).join('\n')}\n'
+        'Si me dices cual eliges (dia y hora), lo siguiente es confirmarlo en '
+        'tu agenda.';
+  }
+
+  String _periodPreferenceLead(_DayPeriod period) => switch (period) {
+    _DayPeriod.morning => 'Por la mañana',
+    _DayPeriod.afternoon => 'Por la tarde',
+    _DayPeriod.evening => 'Por la noche',
+  };
+
+  Future<List<({DateTime day, int count})>> _rankWeekdaysByFreeSlots(
+    DateTime start,
+    DateTime end, {
+    _DayPeriod? period,
+    int skipIfBelow = 0,
+  }) async {
+    final out = <({DateTime day, int count})>[];
+    for (
+      var d = _dateOnly(start);
+      !d.isAfter(_dateOnly(end));
+      d = d.add(const Duration(days: 1))
+    ) {
+      var slots = await availableSlots(d, limit: 500);
+      slots = _filterSlotsByPeriod(slots, period);
+      final count = slots.length;
+      if (count <= skipIfBelow) continue;
+      out.add((day: d, count: count));
+    }
+    out.sort((a, b) => b.count.compareTo(a.count));
+    return out;
+  }
+
+  List<DateTime> _filterSlotsByPeriod(
+    List<DateTime> slots,
+    _DayPeriod? period,
+  ) {
+    if (period == null) return slots;
+    return slots.where((s) => _slotMatchesPeriod(s, period)).toList();
+  }
+
+  bool _slotMatchesPeriod(DateTime slotStart, _DayPeriod period) {
+    final h = slotStart.hour;
+    return switch (period) {
+      _DayPeriod.morning => h < 14,
+      _DayPeriod.afternoon => h >= 14 && h < 18,
+      _DayPeriod.evening => h >= 18,
+    };
+  }
+
+  String _periodHintSpanish(_DayPeriod? p) {
+    return switch (p) {
+      null => '',
+      _DayPeriod.morning => ' por la mañana',
+      _DayPeriod.afternoon => ' por la tarde',
+      _DayPeriod.evening => ' por la noche',
+    };
+  }
+
+  Future<List<String>> _collectSampleSlotsLines(
+    Iterable<DateTime> days,
+    _DayPeriod period, {
+    int maxEntries = 5,
+  }) async {
+    final out = <String>[];
+    for (final day in days) {
+      final filtered = _filterSlotsByPeriod(
+        await availableSlots(day, limit: 48),
+        period,
+      );
+      for (final slot in filtered.take(2)) {
+        out.add('- ${_formatDate(slot)} a las ${_formatTime(slot)}');
+        if (out.length >= maxEntries) return out;
+      }
+    }
+    return out;
+  }
+
+  Future<String> _formatBroadAvailabilityReply({
+    required List<({DateTime day, int count})> ranked,
+    required _AvailScope scope,
+    required _AvailWindow window,
+    required _DayPeriod? appliedPeriod,
+  }) async {
+    if (ranked.isEmpty) {
+      return 'En el lapso ${_formatHumanSpan(window)} no veo dias laborales '
+          'con huecos claros${_periodHintSpanish(appliedPeriod)}. '
+          '¿Prefieres otra mirada (**esta semana** o **resto del mes**) o dar '
+          'un dia concreto?';
+    }
+
+    final topDays = ranked.take(3).toList();
+    final joined = topDays
+        .map(
+          (e) =>
+              '${_weekdaySpanish(e.day.weekday)} ${_formatDate(e.day)} '
+              '(unos ${e.count} huecos libres${_franjaCue(appliedPeriod)})',
+        )
+        .join('; ');
+
+    if (appliedPeriod != null) {
+      final picks = await _collectSampleSlotsLines(
+        topDays.map((e) => e.day),
+        appliedPeriod,
+        maxEntries: 5,
+      );
+      return '${_availIntroLine(scope)}\nYa marcaste que prefieres'
+          '${_periodHintSpanish(appliedPeriod)}. Entre ${_formatHumanSpan(window)} '
+          ', los dias con mas opciones ${_franjaCueCompact(appliedPeriod)} son: '
+          '$joined.'
+          '${picks.isEmpty ? '' : '\nAlgunos horarios ejemplo:\n${picks.take(5).join('\n')}'}\n'
+          'Respondeme cual te sirve o dime un dia y horario exactos en un mensaje.';
+    }
+
+    return '${_availIntroLine(scope)}\nEntre ${_formatHumanSpan(window)} '
+        ', estos son los dias con **menos citas acumuladas** (hay mas huecos '
+        'relativos): $joined.\n'
+        '\n¿Te va mejor **por la mañana** (antes de las 14:00), **por la tarde** '
+        '(14:00 a 18:00) o **por la noche** (después de las 18:00)? Con eso '
+        'te sugiero ya horarios muy concretos.\n'
+        'Si desde el primer mensaje me dices **dia y hora**, acoto la busqueda '
+        'al instante.';
+  }
+
+  String _availIntroLine(_AvailScope scope) => switch (scope) {
+    _AvailScope.thisWeek =>
+      'Esta semana revisando la agenda de demostracion ($_kDemoCalendarYear).',
+    _AvailScope.restOfMay =>
+      'En lo que queda de mayo (hasta ${_formatDate(DateTime(_kDemoCalendarYear, 5, 30))}) '
+          'dentro del calendario demo.',
+  };
+
+  String _franjaCue(_DayPeriod? p) => p == null ? '' : ' en esa franja';
+
+  String _franjaCueCompact(_DayPeriod p) => switch (p) {
+    _DayPeriod.morning => 'por la mañana',
+    _DayPeriod.afternoon => 'por la tarde',
+    _DayPeriod.evening => 'por la noche',
+  };
+
+  String _formatHumanSpan(_AvailWindow w) =>
+      '${_formatDate(w.start)} al ${_formatDate(w.end)}';
+
+  _AvailWindow _availDateRange(_AvailScope scope) {
+    final mayStart = DateTime(_kDemoCalendarYear, 5, 11);
+    final mayEnd = DateTime(_kDemoCalendarYear, 5, 30);
+    final ref = _effectiveRefDayForDemo(DateTime.now());
+
+    switch (scope) {
+      case _AvailScope.restOfMay:
+        var start = ref.isBefore(mayStart) ? mayStart : ref;
+        final startNorm = _dateOnly(start);
+        if (startNorm.isAfter(_dateOnly(mayEnd))) {
+          start = mayStart;
+        }
+        return _AvailWindow(start: _dateOnly(start), end: mayEnd);
+
+      case _AvailScope.thisWeek:
+        final monClip = () {
+          final mon = _weekMondayOf(ref);
+          return mon.isBefore(mayStart) ? mayStart : _dateOnly(mon);
+        }();
+
+        final sunRaw = monClip.add(const Duration(days: 6));
+        var start = ref.isAfter(monClip) ? _dateOnly(ref) : _dateOnly(monClip);
+        if (start.isBefore(mayStart)) {
+          start = mayStart;
+        }
+        final endRaw = sunRaw.isAfter(mayEnd) ? mayEnd : _dateOnly(sunRaw);
+
+        if (start.isAfter(endRaw)) {
+          return _AvailWindow(start: mayStart, end: mayEnd);
+        }
+        return _AvailWindow(start: start, end: endRaw);
+    }
+  }
+}
+
+DateTime _effectiveRefDayForDemo(DateTime now) {
+  final mayStart = DateTime(_kDemoCalendarYear, 5, 11);
+  final mayEnd = DateTime(_kDemoCalendarYear, 5, 30);
+  final d = _dateOnly(now);
+  if (!d.isBefore(mayStart) && !d.isAfter(mayEnd)) {
+    return d;
+  }
+  return mayStart;
+}
+
+DateTime _weekMondayOf(DateTime d) =>
+    _dateOnly(d.subtract(Duration(days: d.weekday - DateTime.monday)));
+
+String _weekdaySpanish(int weekday) {
+  switch (weekday) {
+    case DateTime.monday:
+      return 'Lunes';
+    case DateTime.tuesday:
+      return 'Martes';
+    case DateTime.wednesday:
+      return 'Miercoles';
+    case DateTime.thursday:
+      return 'Jueves';
+    case DateTime.friday:
+      return 'Viernes';
+    case DateTime.saturday:
+      return 'Sabado';
+    case DateTime.sunday:
+      return 'Domingo';
+    default:
+      return '?';
+  }
+}
+
+_AvailScope _inferAvailScope(String lower) {
+  if (lower.contains('resto del mes')) {
+    return _AvailScope.restOfMay;
+  }
+  if (lower.contains('lo que queda')) {
+    return _AvailScope.restOfMay;
+  }
+  if (lower.contains('en mayo')) {
+    return _AvailScope.restOfMay;
+  }
+  if (lower.contains('este mes')) {
+    return _AvailScope.restOfMay;
+  }
+  return _AvailScope.thisWeek;
+}
+
+_DayPeriod? _parseDayPeriod(String lower) {
+  if (lower.contains('por la noche') || lower.contains('en la noche')) {
+    return _DayPeriod.evening;
+  }
+  if (lower.contains('por la tarde') ||
+      lower.contains('en la tarde') ||
+      lower.contains('de tarde') ||
+      RegExp(r'\btarde\b').hasMatch(lower)) {
+    return _DayPeriod.afternoon;
+  }
+  if (lower.contains('por la manana') ||
+      lower.contains('en la manana') ||
+      lower.contains('media manana')) {
+    return _DayPeriod.morning;
+  }
+  return null;
+}
+
+bool _containsBroadAvailabilityIntent(String lower) {
+  return lower.contains('disponibilidad') ||
+      lower.contains('que dias') ||
+      lower.contains('qué dias') ||
+      lower.contains('que dia') ||
+      lower.contains('qué dia') ||
+      lower.contains('horarios disponibles') ||
+      lower.contains('horarios libres');
+}
+
+bool _looksLikePeriodRefinement(String lower, ConversationContext ctx) {
+  final parsed = _parseDayPeriod(lower);
+  if (parsed == null) {
+    return false;
+  }
+  if (lower.length > 140) {
+    return false;
+  }
+  if (_lastAssistantAvailScope(ctx) == null) {
+    return false;
+  }
+  if (_containsBroadAvailabilityIntent(lower)) {
+    return false;
+  }
+  return true;
+}
+
+_AvailScope? _lastAssistantAvailScope(ConversationContext ctx) {
+  for (var i = ctx.recentMessages.length - 1; i >= 0; i--) {
+    final m = ctx.recentMessages[i];
+    if (m.role != 'assistant') {
+      continue;
+    }
+    final t = _normalize(m.text);
+    if (!(t.contains('menos citas acumuladas') ||
+        t.contains('mas huecos') ||
+        t.contains('huecos relativos'))) {
+      continue;
+    }
+    if (t.contains('en lo que queda de mayo')) {
+      return _AvailScope.restOfMay;
+    }
+    if (t.contains('esta semana revisando')) {
+      return _AvailScope.thisWeek;
+    }
+  }
+  return null;
 }
 
 DateTime? _newDateTimeFromMgmt(SchedulingManagementDraft m) {
@@ -693,6 +1097,14 @@ bool _asksRescheduleAppointment(String lower) {
       lower.contains('mover la cita');
 }
 
+/// Listar / cancelar / reprogramar no deben bloquearse por falta de `nombre` en memoria.
+bool schedulingSkipsNombrePrompt(String rawMessage) {
+  final lower = _normalize(rawMessage.trim());
+  return _asksListAppointments(lower) ||
+      _asksCancelAppointment(lower) ||
+      _asksRescheduleAppointment(lower);
+}
+
 enum _MissingField { name, service, date, time }
 
 SchedulingDraft _mergeDraft({
@@ -770,14 +1182,26 @@ bool _isBookingMessage(String lower) {
 }
 
 bool _asksForAvailability(String lower) {
-  return lower.contains('disponibilidad') ||
+  if (lower.contains('disponibilidad') ||
       lower.contains('disponible') ||
       lower.contains('que dias') ||
       lower.contains('qué dias') ||
       lower.contains('que horarios') ||
       lower.contains('qué horarios') ||
       lower.contains('horarios libres') ||
-      lower.contains('espacio');
+      lower.contains('espacio') ||
+      lower.contains('huecos')) {
+    return true;
+  }
+  final looselyAboutBooking =
+      lower.contains('cita') ||
+      lower.contains('agendar') ||
+      lower.contains('reserv');
+  return looselyAboutBooking &&
+      (lower.contains('esta semana') ||
+          lower.contains('resto del mes') ||
+          lower.contains('este mes') ||
+          lower.contains('en mayo'));
 }
 
 String? _extractName(String message) {

@@ -7,6 +7,7 @@ import 'package:dotenv/dotenv.dart';
 import 'package:path/path.dart' as p;
 import 'package:qr/qr.dart' as qr_pkg;
 import 'package:whatsapp_bot_flutter/whatsapp_bot_flutter.dart';
+import 'package:whatsapp_web_puppeteer/ai/ai_context.dart';
 import 'package:whatsapp_web_puppeteer/ai/ai_service.dart';
 import 'package:whatsapp_web_puppeteer/ai/providers/ollama_provider.dart';
 import 'package:whatsapp_web_puppeteer/scheduling/local_scheduling_store.dart';
@@ -479,6 +480,26 @@ const _offlineAiReply =
 const _genericReplyError =
     'Hubo un problema tecnico al responder. Intenta de nuevo en un momento; si es urgente vuelve a escribir.';
 
+bool _needsNombrePromptFirst(ConversationContext context, String trimmedBody) {
+  if (schedulingSkipsNombrePrompt(trimmedBody)) return false;
+  final nombre = context.facts['nombre']?.trim() ?? '';
+  if (nombre.isNotEmpty) return false;
+  if (context.facts['nombre_pedido'] != '1') return true;
+  // Ya pedimos nombre una vez; insistir solo si vuelve otro saludo suelto sin dato.
+  return isStandaloneUserGreeting(trimmedBody);
+}
+
+/// Solicitud corta de nombre antes de agenda/IA cuando aun falta `nombre`.
+String _mensajePedirNombre(BusinessProfile perfilNegocio) {
+  final negocio = perfilNegocio.businessName.trim();
+  if (negocio.isEmpty) {
+    return 'Hola, soy la asistente virtual del consultorio. Para atenderte mejor, '
+        '¿cómo te gustaría que te llamemos?';
+  }
+  return 'Hola, gracias por escribir a $negocio. Soy la asistente virtual. '
+      '¿Cómo te gustaría que te dirigamos por nombre?';
+}
+
 Future<void> _generateAndSendReply(
   WhatsappClient client,
   AIService aiService,
@@ -502,6 +523,19 @@ Future<void> _generateAndSendReply(
     await conversationStore.saveUserMessage(to, body);
     final businessProfile = await conversationStore.loadBusinessProfile();
     final conversationContext = await conversationStore.loadContext(to);
+
+    // Prioridad: conocer cómo dirigirnos al usuario antes de agenda o modelo.
+    if (_needsNombrePromptFirst(conversationContext, body)) {
+      final reply = _mensajePedirNombre(businessProfile);
+      await _sendReply(client, to: to, message: reply, replyMessageId: id);
+      await conversationStore.mergeConversationFacts(to, {
+        'nombre_pedido': '1',
+      });
+      await conversationStore.saveAssistantMessage(to, reply);
+      stdout.writeln('[TX] $to: $reply');
+      return;
+    }
+
     final schedulingReply = await schedulingService.handleMessage(
       jid: to,
       message: body,

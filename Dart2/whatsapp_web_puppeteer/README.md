@@ -113,6 +113,11 @@ Cada usuario se identifica por su JID de WhatsApp (`@lid`, `@c.us`, etc.). Para 
 - cada mensaje guardado se recorta a 1000 caracteres;
 - si un mensaje entrante supera 2000 caracteres, no se manda a Ollama y el bot pide un resumen.
 
+Si en pruebas ves que el bot **no pide el nombre** al inicio, suele ser porque en
+`data/store/conversations/<jid>.json` ya existe `facts.nombre` de una sesion anterior.
+Para simular un **primer contacto limpio**, borra ese archivo o vacia el objeto `facts`
+(tambien `nombre_pedido` si lo hubiera) y vuelve a escribir *hola*.
+
 El conocimiento oficial del negocio vive en:
 
 ```text
@@ -141,6 +146,28 @@ El flujo de agenda corre antes de Ollama: detecta intención de cita, pide solo 
 Tambien puedes escribir cosas como *mis citas* (listar activas), *cancelar mi cita* (pide confirmacion con *si cancelar*) o *reprogramar cita* / *cambiar el horario* (elige cita si hay varias y propone nuevo dia/hora). Los borradores de esos pasos viven en `data/store/appointment_drafts/mgmt_*.json` y **caducan a las 24 horas** si el usuario no termina el flujo, para no interpretar dias despues un "2" o un "no" como parte de una cancelacion vieja.
 
 En una sola linea también puedes: *cancelar cita 2*, *reprogramar cita 2*, o *reprogramar cita 2 martes 4pm* (fecha/hora nueva en el mismo mensaje cuando el parser ya entiende dia y hora).
+
+### Sembrado demo para mayo
+
+Para llenar la agenda local con ocupacion ficticia **lunes a viernes, del 11 al 30
+de mayo** (slots de 30 minutos, nivel de ocupacion aleatorio reproducible), ejecuta **desde
+esta carpeta**:
+
+```powershell
+dart run tool/seed_mayo_calendar.dart
+```
+
+Opcionalmente indica año (por defecto **2026**, alineado con el calendario demo del
+servicio de agendado):
+
+```powershell
+dart run tool/seed_mayo_calendar.dart 2026
+```
+
+**Importante:** el script **sobrescribe** `data/appointments.json` y
+`data/calendar_events.json`. `data/availability.json` no se modifica.
+
+Después de sembrar, puedes preguntar al bot por disponibilidad vaga (“esta semana”, “resto del mes”), refinar por franja (mañana / tarde / noche) o dar día y hora desde el primer mensaje para acotar al instante.
 
 Si no aparece `[RX]`, el bot tiene un respaldo por polling de chats no leidos.
 Para ver errores de ese respaldo:
