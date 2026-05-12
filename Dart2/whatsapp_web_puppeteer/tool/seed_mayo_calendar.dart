@@ -1,12 +1,31 @@
-/// Genera datos demo de mayo (citas ocupadas). Uso desde la carpeta del proyecto:
-///   dart run tool/seed_mayo_calendar.dart
-///
-/// Pisa calendar_events.json y appointments.json en data/.
+// Genera datos demo de mayo (citas ocupadas). Uso desde la carpeta del proyecto:
+//   dart run tool/seed_mayo_calendar.dart
+//
+// Pisa calendar_events.json y appointments.json en data/.
+//
+// Cada paciente ficticio tiene siempre el mismo [jid]; las consultas "mis citas"
+// desde un numero real solo ven las citas con ese jid (el seed no usa el LID del tester).
+
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
 import 'package:path/path.dart' as p;
+
+/// Persona estable: todas sus citas comparten [jid].
+class _DemoPaciente {
+  const _DemoPaciente({
+    required this.jid,
+    required this.displayName,
+    this.weight = 1,
+  });
+
+  final String jid;
+  final String displayName;
+
+  /// Peso para sorteo proporcional de citas (mayor = mas ocupacion demo).
+  final int weight;
+}
 
 void main(List<String> args) {
   final year = args.isNotEmpty ? int.tryParse(args.first) ?? 2026 : 2026;
@@ -33,13 +52,51 @@ void main(List<String> args) {
     'Endodoncia',
     'Extracciones',
   ];
-  final names = ['Ana', 'Luis', 'María', 'Pedro', 'Sofía', 'Demo Paciente'];
-  final demoJids = [
-    'demo001@lid',
-    'demo002@lid',
-    'demo003@lid',
-    '86062705705098@lid',
+
+  final roster = <_DemoPaciente>[
+    _DemoPaciente(
+      jid: 'paciente_arturo_demo@lid',
+      displayName: 'Arturo Méndez',
+      weight: 5,
+    ),
+    const _DemoPaciente(
+      jid: 'paciente_analucia_demo@lid',
+      displayName: 'Ana Lucía Ramos',
+      weight: 2,
+    ),
+    const _DemoPaciente(
+      jid: 'paciente_luis_demo@lid',
+      displayName: 'Luis Hernández',
+      weight: 2,
+    ),
+    const _DemoPaciente(
+      jid: 'paciente_maria_demo@lid',
+      displayName: 'María Ortega',
+      weight: 2,
+    ),
+    const _DemoPaciente(
+      jid: 'paciente_pedro_demo@lid',
+      displayName: 'Pedro Castro',
+      weight: 2,
+    ),
+    const _DemoPaciente(
+      jid: 'paciente_sofia_demo@lid',
+      displayName: 'Sofía Núñez',
+      weight: 2,
+    ),
+    const _DemoPaciente(
+      jid: 'paciente_demo_generico_demo@lid',
+      displayName: 'Demo Paciente',
+      weight: 2,
+    ),
   ];
+
+  final weightedPool = <_DemoPaciente>[];
+  for (final p in roster) {
+    for (var w = 0; w < p.weight; w++) {
+      weightedPool.add(p);
+    }
+  }
 
   final appointments = <Map<String, dynamic>>[];
   final events = <Map<String, dynamic>>[];
@@ -77,14 +134,13 @@ void main(List<String> args) {
       final id = 'appt_seed_$micro';
       final evId = 'evt_seed_$micro';
       final end = start.add(const Duration(minutes: slotMinutes));
-      final name = names[rnd.nextInt(names.length)];
+      final paciente = weightedPool[rnd.nextInt(weightedPool.length)];
       final service = services[rnd.nextInt(services.length)];
-      final jid = demoJids[rnd.nextInt(demoJids.length)];
 
       appointments.add({
         'id': id,
-        'jid': jid,
-        'name': name,
+        'jid': paciente.jid,
+        'name': paciente.displayName,
         'service': service,
         'start': start.toIso8601String(),
         'end': end.toIso8601String(),
@@ -99,7 +155,7 @@ void main(List<String> args) {
         'status': 'confirmed',
         'start': start.toIso8601String(),
         'end': end.toIso8601String(),
-        'title': '$service - $name',
+        'title': '${paciente.displayName} — $service',
         'appointmentId': id,
       });
     }
@@ -114,6 +170,9 @@ void main(List<String> args) {
   evFile.writeAsStringSync('${enc.convert({'events': events})}\n');
 
   stdout.writeln(
-    'OK: ${appointments.length} citas demo en mayo $year (lun-vie) -> ${apptFile.path} y ${evFile.path}',
+    'OK: ${appointments.length} citas demo en mayo $year (lun-vie) -> '
+    '${apptFile.path} y ${evFile.path}\n'
+    'Pacientes ficticios con jid estable (${roster.length} perfiles; Arturo '
+    'con peso mayor). No se usa el LID del tester.',
   );
 }

@@ -167,6 +167,11 @@ dart run tool/seed_mayo_calendar.dart 2026
 **Importante:** el script **sobrescribe** `data/appointments.json` y
 `data/calendar_events.json`. `data/availability.json` no se modifica.
 
+Cada paciente de prueba del seed lleva siempre el **mismo JID ficticio** (por ejemplo
+`paciente_arturo_demo@lid` para Arturo, con más citas que otros por peso estadístico)
+para que las listas tipo *mis citas* desde tu WhatsApp **no mezclen** citas de
+personajes demo con tu identificador real.
+
 Después de sembrar, puedes preguntar al bot por disponibilidad vaga (“esta semana”, “resto del mes”), refinar por franja (mañana / tarde / noche) o dar día y hora desde el primer mensaje para acotar al instante.
 
 Si no aparece `[RX]`, el bot tiene un respaldo por polling de chats no leidos.
