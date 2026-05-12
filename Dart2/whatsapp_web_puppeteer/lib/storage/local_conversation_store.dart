@@ -75,6 +75,32 @@ class LocalConversationStore {
     );
   }
 
+  /// Fusiona datos en `facts` del JSON de la conversacion sin repetir `_appendMessage`.
+  Future<void> mergeConversationFacts(
+    String jid,
+    Map<String, String> extraFacts,
+  ) async {
+    await ensureReady();
+    final record = await _loadConversationRecord(jid);
+    final messages = _messageList(record['messages']);
+    final facts = _factsMap(record['facts']);
+    for (final entry in extraFacts.entries) {
+      final val = entry.value.trim();
+      if (val.isEmpty) {
+        facts.remove(entry.key);
+      } else {
+        facts[entry.key] = val;
+      }
+    }
+    final now = DateTime.now().toUtc().toIso8601String();
+    record['jid'] = jid;
+    record['updatedAt'] = now;
+    record['facts'] = facts;
+    record['summary'] = _buildSimpleSummary(facts, messages);
+
+    await _writeJson(_conversationFile(jid), record);
+  }
+
   Future<void> _appendMessage(String jid, String role, String text) async {
     await ensureReady();
     final record = await _loadConversationRecord(jid);
@@ -177,7 +203,7 @@ Map<String, String> _updatedFacts(
 
   final lower = clean.toLowerCase();
   final nameMatch = RegExp(
-    r'\b(?:me llamo|soy)\s+([a-záéíóúñü]{2,30})(?:\s+[a-záéíóúñü]{2,30})?',
+    r'\b(?:me llamo|soy|a nombre de)\s+([a-záéíóúñü]{2,30})(?:\s+[a-záéíóúñü]{2,30})?',
     caseSensitive: false,
   ).firstMatch(clean);
   if (nameMatch != null) {
