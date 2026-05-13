@@ -5,7 +5,7 @@ import 'package:whatsapp_web_puppeteer/scheduling/scheduling_models.dart';
 /// Ancla la agenda cargada desde seed (mayo demo) incluso si el reloj del PC no coincide.
 const _kDemoCalendarYear = 2026;
 
-enum _AvailScope { thisWeek, restOfMay }
+enum _AvailScope { thisWeek, nextWeek, restOfMay }
 
 enum _DayPeriod { morning, afternoon, evening }
 
@@ -20,6 +20,12 @@ class SchedulingService {
   SchedulingService({required LocalSchedulingStore store}) : _store = store;
 
   final LocalSchedulingStore _store;
+
+  /// Borra borrador de cita y gestiones a medias (cancelar / reprogramar).
+  Future<void> resetLocalSchedulingState(String jid) async {
+    await _store.clearDraft(jid);
+    await _store.clearManagementDraft(jid);
+  }
 
   Future<String?> handleMessage({
     required String jid,
@@ -39,7 +45,7 @@ class SchedulingService {
       return reply;
     }
 
-    if (_asksListAppointments(lower)) {
+    if (_asksListAppointments(lower) || _asksWhenIsMyAppointment(lower)) {
       await _store.clearDraft(jid);
       return _respondListFutureAppointments(jid);
     }
@@ -54,6 +60,14 @@ class SchedulingService {
       return _beginRescheduleFlow(jid, message, lower);
     }
 
+    if (_schedulingYieldsToSmalltalk(lower)) {
+      final d = await _store.loadDraft(jid);
+      if (_hasAnyDraftValue(d)) {
+        await _store.clearDraft(jid);
+      }
+      return null;
+    }
+
     final draft = await _store.loadDraft(jid);
     final hasActiveDraft = _hasAnyDraftValue(draft);
     final availFollowUp =
@@ -61,7 +75,10 @@ class SchedulingService {
         _looksLikePeriodRefinement(lower, conversationContext) &&
         _lastAssistantAvailScope(conversationContext) != null;
     final isScheduling =
-        hasActiveDraft || _isBookingMessage(lower) || availFollowUp;
+        hasActiveDraft ||
+        _isBookingMessage(lower) ||
+        availFollowUp ||
+        _asksForAvailability(lower);
     if (!isScheduling) return null;
 
     await _store.clearManagementDraft(jid);
@@ -591,12 +608,62 @@ class SchedulingService {
     DateTime end, {
     String? ignoreAppointmentId,
   }) async {
-    final slots = await availableSlots(
-      start,
-      limit: 100,
+    if (!start.isBefore(end)) return false;
+
+    final availability = await _store.loadAvailability();
+    final slotDur = Duration(minutes: availability.slotMinutes);
+    if (end.difference(start) != slotDur) return false;
+
+    final dayOnly = _dateOnly(start);
+    final dateText = _isoDate(dayOnly);
+    if (availability.blockedDates.any((b) => b.date == dateText)) {
+      return false;
+    }
+
+    final now = DateTime.now();
+    final minStart = now.add(Duration(hours: availability.minNoticeHours));
+    if (!start.isAfter(minStart)) return false;
+
+    final dayKey = _weekdayKey(dayOnly);
+    final ranges = availability.workingHours[dayKey] ?? const <TimeRange>[];
+    if (ranges.isEmpty) return false;
+
+    var alignedWithGrid = false;
+    for (final range in ranges) {
+      final startParts = _parseClock(range.start);
+      final endParts = _parseClock(range.end);
+      if (startParts == null || endParts == null) continue;
+
+      var cursor = DateTime(
+        dayOnly.year,
+        dayOnly.month,
+        dayOnly.day,
+        startParts.hour,
+        startParts.minute,
+      );
+      final rangeEnd = DateTime(
+        dayOnly.year,
+        dayOnly.month,
+        dayOnly.day,
+        endParts.hour,
+        endParts.minute,
+      );
+
+      while (cursor.add(slotDur).compareTo(rangeEnd) <= 0) {
+        if (cursor.isAtSameMomentAs(start)) {
+          alignedWithGrid = true;
+          break;
+        }
+        cursor = cursor.add(slotDur);
+      }
+      if (alignedWithGrid) break;
+    }
+    if (!alignedWithGrid) return false;
+
+    final events = await _blockingEvents(
       ignoreAppointmentId: ignoreAppointmentId,
     );
-    return slots.any((slot) => slot.isAtSameMomentAs(start));
+    return _isFree(start, end, events);
   }
 
   Future<Duration> _slotDuration() async {
@@ -798,10 +865,14 @@ class SchedulingService {
     required _DayPeriod? appliedPeriod,
   }) async {
     if (ranked.isEmpty) {
+      final scopeHints = switch (scope) {
+        _AvailScope.thisWeek => '**la siguiente semana** o **resto del mes**',
+        _AvailScope.nextWeek => '**esta semana** o **resto del mes**',
+        _AvailScope.restOfMay => '**esta semana** o **la siguiente semana**',
+      };
       return 'En el lapso ${_formatHumanSpan(window)} no veo dias laborales '
           'con huecos claros${_periodHintSpanish(appliedPeriod)}. '
-          '¿Prefieres otra mirada (**esta semana** o **resto del mes**) o dar '
-          'un dia concreto?';
+          '¿Prefieres otra mirada ($scopeHints) o dar un dia concreto?';
     }
 
     final topDays = ranked.take(3).toList();
@@ -840,6 +911,8 @@ class SchedulingService {
   String _availIntroLine(_AvailScope scope) => switch (scope) {
     _AvailScope.thisWeek =>
       'Esta semana revisando la agenda de demostracion ($_kDemoCalendarYear).',
+    _AvailScope.nextWeek =>
+      'La siguiente semana en la agenda de demostracion ($_kDemoCalendarYear).',
     _AvailScope.restOfMay =>
       'En lo que queda de mayo (hasta ${_formatDate(DateTime(_kDemoCalendarYear, 5, 30))}) '
           'dentro del calendario demo.',
@@ -887,6 +960,19 @@ class SchedulingService {
           return _AvailWindow(start: mayStart, end: mayEnd);
         }
         return _AvailWindow(start: start, end: endRaw);
+
+      case _AvailScope.nextWeek:
+        final weekMon = _weekMondayOf(ref);
+        final anchorMon = weekMon.isBefore(mayStart) ? mayStart : weekMon;
+        final nextMon = anchorMon.add(const Duration(days: 7));
+        final nextSun = nextMon.add(const Duration(days: 6));
+        var start = _dateOnly(nextMon);
+        if (start.isBefore(mayStart)) start = mayStart;
+        var end = nextSun.isAfter(mayEnd) ? mayEnd : _dateOnly(nextSun);
+        if (start.isAfter(end)) {
+          return _AvailWindow(start: mayStart, end: mayEnd);
+        }
+        return _AvailWindow(start: start, end: end);
     }
   }
 }
@@ -937,6 +1023,13 @@ _AvailScope _inferAvailScope(String lower) {
   }
   if (lower.contains('este mes')) {
     return _AvailScope.restOfMay;
+  }
+  if (lower.contains('siguiente semana') ||
+      lower.contains('proxima semana') ||
+      lower.contains('semana que viene') ||
+      lower.contains('la semana siguiente') ||
+      lower.contains('semana entrante')) {
+    return _AvailScope.nextWeek;
   }
   return _AvailScope.thisWeek;
 }
@@ -1000,6 +1093,10 @@ _AvailScope? _lastAssistantAvailScope(ConversationContext ctx) {
     }
     if (t.contains('en lo que queda de mayo')) {
       return _AvailScope.restOfMay;
+    }
+    if (t.contains('la siguiente semana en la agenda') ||
+        t.contains('siguiente semana en la agenda')) {
+      return _AvailScope.nextWeek;
     }
     if (t.contains('esta semana revisando')) {
       return _AvailScope.thisWeek;
@@ -1073,6 +1170,44 @@ bool _asksListAppointments(String lower) {
       lower.contains('citas activas');
 }
 
+/// Intención "¿cuándo / qué día es mi cita ya existente?" (no confundir con agendar).
+bool _asksWhenIsMyAppointment(String lower) {
+  if (RegExp(r'que\s+dia\s+prefier|cual\s+dia\s+prefier').hasMatch(lower)) {
+    return false;
+  }
+  if (lower.contains('ya tengo') && lower.contains('cita')) return true;
+  if (lower.contains('si ya tengo') && lower.contains('cita')) return true;
+  if (lower.contains('no recuerdo') &&
+      (lower.contains('que dia') ||
+          lower.contains('cuando') ||
+          lower.contains('cita') ||
+          lower.contains('fecha'))) {
+    return true;
+  }
+  if (lower.contains('quiero saber') &&
+      lower.contains('cita') &&
+      (lower.contains('tengo') ||
+          lower.contains('si ya') ||
+          lower.contains('ya tengo') ||
+          lower.contains('si ya tengo'))) {
+    return true;
+  }
+  if (lower.contains('cita programada') &&
+      (lower.contains('cuando') ||
+          lower.contains('que dia') ||
+          lower.contains('que hora'))) {
+    return true;
+  }
+  if ((lower.contains('que dia') || lower.contains('cuando')) &&
+      (lower.contains('tengo programad') ||
+          lower.contains('tengo agendad') ||
+          lower.contains('tengo la cita'))) {
+    return true;
+  }
+  if (lower.contains('dia tengo') && lower.contains('programad')) return true;
+  return false;
+}
+
 bool _asksCancelAppointment(String lower) {
   final mentionsAppointment = lower.contains('cita') || lower.contains('visit');
   if (mentionsAppointment &&
@@ -1101,6 +1236,7 @@ bool _asksRescheduleAppointment(String lower) {
 bool schedulingSkipsNombrePrompt(String rawMessage) {
   final lower = _normalize(rawMessage.trim());
   return _asksListAppointments(lower) ||
+      _asksWhenIsMyAppointment(lower) ||
       _asksCancelAppointment(lower) ||
       _asksRescheduleAppointment(lower);
 }
@@ -1114,12 +1250,28 @@ SchedulingDraft _mergeDraft({
   required ConversationContext conversationContext,
 }) {
   final facts = conversationContext.facts;
-  final name = _firstNonEmpty([
-    _extractName(message),
+  final lower = _normalize(message);
+  var extracted = _extractFullName(message);
+  final selfBook =
+      _userSelfBooksForSelf(lower) || _userWantsSavedContactName(lower);
+  if (selfBook &&
+      _wordCount(extracted) <= 1 &&
+      _wordCount(facts['nombre']) >= 2) {
+    extracted = null;
+  }
+  final remembered = facts['nombre']?.trim();
+  final preferRemembered =
+      remembered != null &&
+      remembered.isNotEmpty &&
+      _isRicherPersonalName(remembered, draft.name);
+  final mergedName = _firstNonEmpty([
+    extracted,
+    if (selfBook) remembered,
+    if (preferRemembered) remembered,
     draft.name,
-    facts['nombre'],
+    remembered,
   ]);
-  final service = _firstNonEmpty([
+  final mergedService = _firstNonEmpty([
     _extractService(message, businessProfile),
     draft.service,
     facts['servicio_deseado'],
@@ -1127,8 +1279,8 @@ SchedulingDraft _mergeDraft({
   final date = _parsePreferredDate(message);
   final time = _parsePreferredTime(message);
   return draft.copyWith(
-    name: name,
-    service: service,
+    name: mergedName.isEmpty ? null : mergedName,
+    service: mergedService.isEmpty ? null : mergedService,
     preferredDate: date == null ? null : _isoDate(date),
     preferredTime:
         time ?? (draft.preferredTime.isEmpty ? null : draft.preferredTime),
@@ -1181,6 +1333,14 @@ bool _isBookingMessage(String lower) {
       lower.contains('espacio');
 }
 
+bool _hasNextWeekMention(String lower) {
+  return lower.contains('siguiente semana') ||
+      lower.contains('proxima semana') ||
+      lower.contains('semana que viene') ||
+      lower.contains('la semana siguiente') ||
+      lower.contains('semana entrante');
+}
+
 bool _asksForAvailability(String lower) {
   if (lower.contains('disponibilidad') ||
       lower.contains('disponible') ||
@@ -1193,6 +1353,22 @@ bool _asksForAvailability(String lower) {
       lower.contains('huecos')) {
     return true;
   }
+  if (_hasNextWeekMention(lower) &&
+      (lower.contains('libre') ||
+          lower.contains('disponib') ||
+          lower.contains('hueco') ||
+          lower.contains('tienes') ||
+          RegExp(r'\b(no|nop)\b').hasMatch(lower))) {
+    return true;
+  }
+  if ((lower.contains('que dia') || lower.contains('cual dia')) &&
+      lower.contains('tienes') &&
+      lower.contains('libre') &&
+      (_hasNextWeekMention(lower) ||
+          lower.contains('esta semana') ||
+          lower.contains('proxima semana'))) {
+    return true;
+  }
   final looselyAboutBooking =
       lower.contains('cita') ||
       lower.contains('agendar') ||
@@ -1201,15 +1377,91 @@ bool _asksForAvailability(String lower) {
       (lower.contains('esta semana') ||
           lower.contains('resto del mes') ||
           lower.contains('este mes') ||
-          lower.contains('en mayo'));
+          lower.contains('en mayo') ||
+          _hasNextWeekMention(lower));
 }
 
-String? _extractName(String message) {
-  final match = RegExp(
-    r'\b(?:me llamo|soy|a nombre de)\s+([a-záéíóúñü]{2,30})(?:\s+[a-záéíóúñü]{2,30})?',
-    caseSensitive: false,
-  ).firstMatch(message);
-  return match?.group(1)?.trim();
+bool _userSelfBooksForSelf(String lower) {
+  return lower.contains('al mio') ||
+      lower.contains('al mismo') ||
+      lower.contains('a mi nombre') ||
+      lower.contains('para mi') ||
+      lower.contains('mi mismo nombre') ||
+      lower.contains('yo mismo') ||
+      lower.contains('para mi mismo') ||
+      lower.contains('la cita es para mi') ||
+      lower.contains('cita para mi') ||
+      lower.contains('agendo para mi') ||
+      lower.contains('reservo para mi');
+}
+
+bool _userWantsSavedContactName(String lower) {
+  return lower.contains('mismo nombre') ||
+      lower.contains('el mismo nombre') ||
+      lower.contains('nombre de antes') ||
+      lower.contains('como antes') ||
+      lower.contains('ya te di mi nombre') ||
+      lower.contains('mi nombre ya') ||
+      lower.contains('usa mi nombre') ||
+      lower.contains('usa el mismo') ||
+      lower.contains('usar mi nombre') ||
+      lower.contains('usar el mismo') ||
+      (lower.contains('el mismo') &&
+          (lower.contains('nombre') ||
+              lower.contains('me llam') ||
+              lower.contains('paciente')));
+}
+
+bool _isRicherPersonalName(String candidate, String draftName) {
+  final d = draftName.trim();
+  final c = candidate.trim();
+  if (c.isEmpty) return false;
+  if (d.isEmpty) return true;
+  final wc = _wordCount(c);
+  final wd = _wordCount(d);
+  if (wc > wd) return true;
+  if (wc == wd && wc >= 2 && c.length > d.length + 3) return true;
+  return false;
+}
+
+String? _extractFullName(String message) {
+  final trimmed = message.trim();
+  if (trimmed.isEmpty) return null;
+  const word = r'[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ]{2,}';
+  final tail = r'(?:\s+' + word + r'){0,4}';
+  final patterns = <RegExp>[
+    RegExp(
+      '\\bmi\\s+nombre\\s+es\\s*,?\\s*($word$tail)\\b',
+      caseSensitive: false,
+    ),
+    RegExp('\\bme\\s+llamo\\s*,?\\s*($word$tail)\\b', caseSensitive: false),
+    RegExp('\\bsoy\\s*,?\\s*($word$tail)\\b', caseSensitive: false),
+    RegExp(
+      '\\ba\\s+nombre\\s+de\\s*,?\\s*($word$tail)\\b',
+      caseSensitive: false,
+    ),
+    RegExp(
+      '\\bla\\s+cita\\s+a\\s+nombre\\s+de\\s*,?\\s*($word$tail)\\b',
+      caseSensitive: false,
+    ),
+  ];
+  for (final re in patterns) {
+    final m = re.firstMatch(trimmed);
+    if (m != null) {
+      var name = m.group(1)!.trim();
+      name = name.replaceAll(RegExp(r'\s+'), ' ');
+      if (name.length > 80) {
+        name = name.substring(0, 80).trim();
+      }
+      if (name.length >= 2) return name;
+    }
+  }
+  return null;
+}
+
+int _wordCount(String? value) {
+  if (value == null || value.trim().isEmpty) return 0;
+  return value.trim().split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
 }
 
 String? _extractService(String message, BusinessProfile profile) {
@@ -1245,6 +1497,24 @@ DateTime? _parsePreferredDate(String message) {
     );
   }
 
+  final slashDMY = RegExp(
+    r'\b(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?\b',
+  ).firstMatch(lower);
+  if (slashDMY != null) {
+    final d = int.tryParse(slashDMY.group(1)!);
+    final mo = int.tryParse(slashDMY.group(2)!);
+    if (d != null && mo != null && d >= 1 && d <= 31 && mo >= 1 && mo <= 12) {
+      final yRaw = slashDMY.group(3);
+      var y = yRaw != null ? int.tryParse(yRaw) : null;
+      if (y != null && y < 100) y += 2000;
+      y ??= _kDemoCalendarYear;
+      return _dateOnly(DateTime(y, mo, d));
+    }
+  }
+
+  final mayOnly = _parseDemoCalendarDayHint(lower);
+  if (mayOnly != null) return mayOnly;
+
   for (final entry in _weekdays.entries) {
     if (lower.contains(entry.key)) {
       return _nextWeekday(now, entry.value);
@@ -1253,23 +1523,100 @@ DateTime? _parsePreferredDate(String message) {
   return null;
 }
 
-String? _parsePreferredTime(String message) {
-  final lower = _normalize(message);
-  final matches = RegExp(
-    r'\b(?:a las\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\b',
-  ).allMatches(lower);
-  for (final match in matches) {
-    var hour = int.tryParse(match.group(1) ?? '');
-    final minute = int.tryParse(match.group(2) ?? '0') ?? 0;
-    final suffix = match.group(3);
-    if (hour == null || hour > 23 || minute > 59) continue;
-    if (suffix != null && suffix.contains('p') && hour < 12) hour += 12;
-    if (suffix != null && suffix.contains('a') && hour == 12) hour = 0;
-    if (suffix == null && hour >= 1 && hour <= 7) hour += 12;
-    if (hour < 8 || hour > 21) continue;
-    return '${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')}';
+DateTime? _parseDemoCalendarDayHint(String lower) {
+  final mayStart = DateTime(_kDemoCalendarYear, 5, 11);
+  final mayEnd = DateTime(_kDemoCalendarYear, 5, 30);
+  final ref = _effectiveRefDayForDemo(DateTime.now());
+
+  Match? m = RegExp(
+    r'\b(?:el\s+)?(?:d[ií]a\s+)?(\d{1,2})\b(?:\s*(?:de\s*)?mayo)?',
+  ).firstMatch(lower);
+  m ??= RegExp(r'^\s*(\d{1,2})\s*$').firstMatch(lower.trim());
+  if (m == null) return null;
+  final day = int.tryParse(m.group(1)!);
+  if (day == null || day < 1 || day > 31) return null;
+  final candidate = DateTime(_kDemoCalendarYear, 5, day);
+  if (!candidate.isBefore(mayStart) && !candidate.isAfter(mayEnd)) {
+    return candidate;
+  }
+  if (!ref.isBefore(mayStart) && !ref.isAfter(mayEnd)) {
+    final tryMonth = DateTime(ref.year, ref.month, day);
+    if (!tryMonth.isBefore(mayStart) && !tryMonth.isAfter(mayEnd)) {
+      return _dateOnly(tryMonth);
+    }
   }
   return null;
+}
+
+bool _schedulingYieldsToSmalltalk(String lower) {
+  final n = _normalize(lower);
+  if (n.length > 120) return false;
+  if (_isBookingMessage(n) || _asksForAvailability(n)) return false;
+  if (n.contains('cita') || n.contains('agendar') || n.contains('agenda')) {
+    return false;
+  }
+  if ((n.contains('sabes') || n.contains('saben')) &&
+      n.contains('quien') &&
+      (n.contains('yo') || n.contains('llamo'))) {
+    return true;
+  }
+  if (n.contains('quien soy') || n.contains('como me llamo')) {
+    return true;
+  }
+  return false;
+}
+
+String? _parsePreferredTime(String message) {
+  var lower = _normalize(message).replaceAll(RegExp(r'\balas\b'), 'a las');
+  lower =
+      lower
+          .replaceAll(RegExp(r'\b\d{4}-\d{2}-\d{2}\b'), ' ')
+          .replaceAll(RegExp(r'\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b'), ' ');
+
+  for (final match
+      in RegExp(
+        r'\b(\d{1,2}):(\d{2})\s*(am|pm|a\.m\.|p\.m\.)?\b',
+      ).allMatches(lower)) {
+    final clock = _coerceBookingClock(match);
+    if (clock != null) return clock;
+  }
+
+  for (final match
+      in RegExp(
+        r'\ba las\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\b',
+      ).allMatches(lower)) {
+    final clock = _coerceBookingClock(match);
+    if (clock != null) return clock;
+  }
+
+  for (final match
+      in RegExp(
+        r'^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\s*$',
+      ).allMatches(lower.trim())) {
+    final clock = _coerceBookingClock(match);
+    if (clock != null) return clock;
+  }
+
+  return null;
+}
+
+/// Interpreta grupo (hora[, minutos][, sufijo]) de [_parsePreferredTime].
+String? _coerceBookingClock(RegExpMatch match) {
+  var hour = int.tryParse(match.group(1) ?? '');
+  final ms = match.group(2);
+  final minute = ms != null && ms.isNotEmpty ? (int.tryParse(ms) ?? 0) : 0;
+  final suffix = match.group(3);
+  if (hour == null || hour > 23 || minute > 59) return null;
+  if (suffix != null && suffix.contains('p') && hour < 12) hour += 12;
+  if (suffix != null && suffix.contains('a') && hour == 12) hour = 0;
+  if ((suffix == null || suffix.trim().isEmpty) &&
+      hour >= 1 &&
+      hour <= 7) {
+    hour += 12;
+  }
+  if (hour < 8 || hour > 21) return null;
+  return '${hour.toString().padLeft(2, '0')}:'
+      '${minute.toString().padLeft(2, '0')}';
 }
 
 DateTime? _dateFromDraft(SchedulingDraft draft) {

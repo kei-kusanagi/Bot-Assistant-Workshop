@@ -36,8 +36,16 @@ class AIService {
         profile,
         userName: nombreUsuario ?? '',
       );
-      return templated ??
+      var reply =
+          templated ??
           _defaultGreeting(profile, userFirstName: nombreUsuario);
+      final n = nombreUsuario?.trim();
+      if (n == null || n.isEmpty) {
+        reply =
+            '$reply Para identificarte en la agenda (nombre y apellido si quieres), '
+            'dime como te llamas.';
+      }
+      return reply.trim();
     }
     final prompt =
         '''
@@ -181,8 +189,7 @@ bool _asksForSchedule(String lower) {
       lower.contains('abren') ||
       lower.contains('cierran') ||
       lower.contains('que dias') ||
-      lower.contains('qué días') ||
-      lower.contains('disponibles');
+      lower.contains('qué días');
 }
 
 bool _asksForServices(String lower) {
@@ -194,13 +201,12 @@ bool _asksForServices(String lower) {
 }
 
 bool _asksForPricing(String lower) {
-  return lower.contains('precio') ||
-      lower.contains('precios') ||
-      lower.contains('costo') ||
-      lower.contains('costos') ||
-      lower.contains('cuanto cuesta') ||
-      lower.contains('cuánto cuesta') ||
-      lower.contains('aproximado');
+  final n = _normalize(lower);
+  return n.contains('precio') ||
+      n.contains('presio') ||
+      n.contains('costo') ||
+      n.contains('cuanto cuesta') ||
+      n.contains('aproximado');
 }
 
 bool _asksForBusinessType(String lower) {
@@ -251,6 +257,7 @@ bool _mentionsNonGreetingTopics(String lower) {
       lower.contains('reserv') ||
       lower.contains('disponib') ||
       lower.contains('precio') ||
+      lower.contains('presio') ||
       lower.contains('costo') ||
       lower.contains('cuanto') ||
       lower.contains('cuánto') ||

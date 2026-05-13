@@ -58,6 +58,15 @@ class LocalConversationStore {
     );
   }
 
+  /// Borra el historial y hechos guardados de un chat (memoria local).
+  Future<void> resetConversation(String jid) async {
+    await ensureReady();
+    final file = _conversationFile(jid);
+    if (await file.exists()) {
+      await file.delete();
+    }
+  }
+
   Future<void> saveUserMessage(String jid, String text) async {
     await _appendMessage(jid, 'user', text);
   }
@@ -105,7 +114,9 @@ class LocalConversationStore {
     await ensureReady();
     final record = await _loadConversationRecord(jid);
     final now = DateTime.now().toUtc().toIso8601String();
-    final messages = _messageList(record['messages'])
+    final priorForFacts =
+        role == 'user' ? _messageList(record['messages']) : <ConversationMessage>[];
+    final messages = List<ConversationMessage>.of(priorForFacts)
       ..add(
         ConversationMessage(
           role: role,
@@ -121,7 +132,12 @@ class LocalConversationStore {
     record['jid'] = jid;
     record['updatedAt'] = now;
     record['messages'] = trimmed.map((message) => message.toJson()).toList();
-    record['facts'] = _updatedFacts(_factsMap(record['facts']), role, text);
+    record['facts'] = _updatedFacts(
+      _factsMap(record['facts']),
+      role,
+      text,
+      priorMessagesForUserTurn: priorForFacts,
+    );
     record['summary'] = _buildSimpleSummary(
       _factsMap(record['facts']),
       trimmed,
@@ -195,21 +211,29 @@ Map<String, String> _factsMap(Object? value) {
 Map<String, String> _updatedFacts(
   Map<String, String> facts,
   String role,
-  String text,
-) {
+  String text, {
+  List<ConversationMessage> priorMessagesForUserTurn = const [],
+}) {
   if (role != 'user') return facts;
   final clean = text.trim();
   if (clean.length > 300) return facts;
 
-  final lower = clean.toLowerCase();
-  final nameMatch = RegExp(
-    r'\b(?:me llamo|soy|a nombre de)\s+([a-záéíóúñü]{2,30})(?:\s+[a-záéíóúñü]{2,30})?',
-    caseSensitive: false,
-  ).firstMatch(clean);
-  if (nameMatch != null) {
-    facts['nombre'] = nameMatch.group(1)!.trim();
+  var extracted = _extractFullNameFromUserText(clean);
+  final nombreEmpty = facts['nombre']?.trim().isEmpty ?? true;
+  final bookingNombreContext = _priorAssistantAskedBookingName(
+    priorMessagesForUserTurn,
+  );
+  if (extracted == null &&
+      nombreEmpty &&
+      (facts['nombre_pedido'] == '1' || bookingNombreContext)) {
+    extracted = _extractBareNameReply(clean);
+  }
+  if (extracted != null) {
+    facts['nombre'] = extracted;
+    facts.remove('nombre_pedido');
   }
 
+  final lower = clean.toLowerCase();
   if (lower.contains('cita') || lower.contains('agendar')) {
     facts['intencion'] = 'agendar cita';
   }
@@ -222,6 +246,143 @@ Map<String, String> _updatedFacts(
   }
 
   return facts;
+}
+
+/// Igual que en agendamiento: varias palabras tras introducción de nombre.
+String? _extractFullNameFromUserText(String message) {
+  final trimmed = message.trim();
+  if (trimmed.isEmpty) return null;
+  const word = r'[a-zA-ZáéíóúÁÉÍÓÚñÑüÜ]{2,}';
+  final tail = r'(?:\s+' + word + r'){0,4}';
+  final patterns = <RegExp>[
+    RegExp(
+      '\\bmi\\s+nombre\\s+es\\s*,?\\s*($word$tail)\\b',
+      caseSensitive: false,
+    ),
+    RegExp('\\bme\\s+llamo\\s*,?\\s*($word$tail)\\b', caseSensitive: false),
+    RegExp('\\bsoy\\s*,?\\s*($word$tail)\\b', caseSensitive: false),
+    RegExp(
+      '\\ba\\s+nombre\\s+de\\s*,?\\s*($word$tail)\\b',
+      caseSensitive: false,
+    ),
+    RegExp(
+      '\\bla\\s+cita\\s+a\\s+nombre\\s+de\\s*,?\\s*($word$tail)\\b',
+      caseSensitive: false,
+    ),
+  ];
+  for (final re in patterns) {
+    final m = re.firstMatch(trimmed);
+    if (m != null) {
+      var name = m.group(1)!.trim();
+      name = name.replaceAll(RegExp(r'\s+'), ' ');
+      if (name.length > 80) {
+        name = name.substring(0, 80).trim();
+      }
+      if (name.length >= 2) return name;
+    }
+  }
+  return null;
+}
+
+/// Tras pedir nombre con [nombre_pedido], el usuario suele responder "Kei Kusanagi"
+/// o "ok, soy Kei Kusanagi" sin formula fija.
+String? _extractBareNameReply(String message) {
+  var s = message.trim();
+  if (s.isEmpty || s.length > 160) return null;
+  s = _stripLeadingNameReplyFillers(s);
+  if (s.isEmpty) return null;
+
+  final fromStop = RegExp(
+    r'^([A-Za-záéíóúÁÉÍÓÚñÑüÜ]{2,}(?:\s+[A-Za-záéíóúÁÉÍÓÚñÑüÜ]{2,}){0,3})\s+'
+    r'(?=(?:gracias|disculpa|perd[oó]n|perdon|por\s+favor|buen|buenas|'
+    r'buenos|hola|que\s+|qué\s+|un\s+|una\s+|me\s+))',
+    caseSensitive: false,
+  ).firstMatch(s);
+  if (fromStop != null) {
+    final candidate = fromStop.group(1)!.trim();
+    if (_looksLikePersonalNameTokens(candidate)) return candidate;
+  }
+
+  final noComma = s.split(',').first.trim();
+  if (noComma != s && _looksLikePersonalNameTokens(noComma)) return noComma;
+
+  if (_looksLikePersonalNameTokens(s)) return s;
+  return null;
+}
+
+String _stripLeadingNameReplyFillers(String input) {
+  var s = input.trim();
+  for (var i = 0; i < 8; i++) {
+    final next = s.replaceFirst(
+      RegExp(
+        r'^(?:ok+|vale+|listo+|bueno+|buen+|aja+|oye+|mira+|'
+        r'a\s*ver+|es\s+que+|o\s+sea+|disculpa+|perd[oó]n+|perdon+)\s*[,:.-]?\s*',
+        caseSensitive: false,
+      ),
+      '',
+    );
+    if (next == s) break;
+    s = next.trim();
+  }
+  return s;
+}
+
+const _nonPersonalNameTokens = <String>{
+  'que',
+  'qué',
+  'los',
+  'las',
+  'unos',
+  'unas',
+  'por',
+  'para',
+  'con',
+  'sin',
+  'pero',
+  'como',
+  'cómo',
+  'tengo',
+  'tiene',
+  'tienes',
+  'quiero',
+  'necesito',
+  'gracias',
+  'disculpa',
+  'hola',
+  'buen',
+  'bueno',
+  'buena',
+  'dia',
+  'día',
+  'cita',
+  'agendar',
+};
+
+bool _looksLikePersonalNameTokens(String raw) {
+  final t = raw.trim();
+  if (t.isEmpty || t.length > 80) return false;
+  final parts = t.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+  if (parts.isEmpty || parts.length > 5) return false;
+  final word = RegExp(r'^[A-Za-záéíóúÁÉÍÓÚñÑüÜ]{2,}$');
+  for (final p in parts) {
+    if (!word.hasMatch(p)) return false;
+    final pl = p.toLowerCase().replaceAll('á', 'a').replaceAll('é', 'e');
+    if (_nonPersonalNameTokens.contains(pl)) return false;
+  }
+  if (parts.length >= 2) return true;
+  return parts.first.length >= 3;
+}
+
+bool _priorAssistantAskedBookingName(List<ConversationMessage> prior) {
+  for (var i = prior.length - 1; i >= 0; i--) {
+    if (prior[i].role != 'assistant') continue;
+    final t = prior[i].text.toLowerCase();
+    return t.contains('a nombre') &&
+        (t.contains('registr') ||
+            t.contains('quien registro') ||
+            t.contains('cita'));
+  }
+  return false;
 }
 
 String? _detectService(String lowerMessage) {

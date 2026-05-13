@@ -480,24 +480,67 @@ const _offlineAiReply =
 const _genericReplyError =
     'Hubo un problema tecnico al responder. Intenta de nuevo en un momento; si es urgente vuelve a escribir.';
 
-bool _needsNombrePromptFirst(ConversationContext context, String trimmedBody) {
-  if (schedulingSkipsNombrePrompt(trimmedBody)) return false;
-  final nombre = context.facts['nombre']?.trim() ?? '';
-  if (nombre.isNotEmpty) return false;
-  if (context.facts['nombre_pedido'] != '1') return true;
-  // Ya pedimos nombre una vez; insistir solo si vuelve otro saludo suelto sin dato.
-  return isStandaloneUserGreeting(trimmedBody);
+bool _userRequestsConversationReset(String body) {
+  final n = body.toLowerCase().trim();
+  if (n == 'reset' || n == '/reset') return true;
+  if (n.contains('reiniciar') &&
+      (n.contains('convers') || n.contains('chat'))) {
+    return true;
+  }
+  if ((n.contains('borrar') || n.contains('resetear')) &&
+      (n.contains('convers') || n.contains('memoria') || n.contains('chat'))) {
+    return true;
+  }
+  if (n.contains('olvida') && n.contains('convers')) return true;
+  return false;
 }
 
-/// Solicitud corta de nombre antes de agenda/IA cuando aun falta `nombre`.
+/// No mostrar saludo inicial si el usuario acaba de contestar el nombre para la agenda.
+bool _awaitingBookingNameReply(ConversationContext ctx) {
+  final msgs = ctx.recentMessages;
+  if (msgs.length < 2 || msgs.last.role != 'user') return false;
+  for (var i = msgs.length - 2; i >= 0; i--) {
+    if (msgs[i].role != 'assistant') continue;
+    final t = msgs[i].text.toLowerCase();
+    return t.contains('a nombre') &&
+        (t.contains('registr') ||
+            t.contains('quien registro') ||
+            t.contains('cita'));
+  }
+  return false;
+}
+
+bool _needsNombrePromptFirst(ConversationContext context, String trimmedBody) {
+  if (schedulingSkipsNombrePrompt(trimmedBody)) return false;
+  if (_awaitingBookingNameReply(context)) return false;
+  final userTurns =
+      context.recentMessages.where((m) => m.role == 'user').length;
+  final atConversationStart = userTurns <= 1;
+  final nombre = context.facts['nombre']?.trim() ?? '';
+  final soloSaludo = isStandaloneUserGreeting(trimmedBody);
+
+  if (nombre.isNotEmpty && !(atConversationStart && soloSaludo)) {
+    return false;
+  }
+
+  if (context.facts['nombre_pedido'] != '1') return true;
+  return soloSaludo;
+}
+
+/// Saludo de bienvenida + pedida de nombre (misma linea que la plantilla `greeting`).
 String _mensajePedirNombre(BusinessProfile perfilNegocio) {
   final negocio = perfilNegocio.businessName.trim();
+  final intro =
+      'Soy la asistente virtual. ¿En que te ayudo hoy? '
+      'Puedo orientarte con horario, ubicacion o agendar una cita.';
   if (negocio.isEmpty) {
-    return 'Hola, soy la asistente virtual del consultorio. Para atenderte mejor, '
-        '¿cómo te gustaría que te llamemos?';
+    return 'Hola, gracias por escribirnos. $intro '
+        'Para identificarte en la agenda, ¿como te llamas? '
+        '(puedes escribir nombre y apellido).';
   }
-  return 'Hola, gracias por escribir a $negocio. Soy la asistente virtual. '
-      '¿Cómo te gustaría que te dirigamos por nombre?';
+  return 'Hola, gracias por escribir a $negocio. $intro '
+      'Para identificarte en la agenda, ¿como te llamas? '
+      '(puedes escribir nombre y apellido).';
 }
 
 Future<void> _generateAndSendReply(
@@ -520,9 +563,27 @@ Future<void> _generateAndSendReply(
   }
 
   try {
+    if (_userRequestsConversationReset(body.trim())) {
+      await conversationStore.resetConversation(to);
+      await schedulingService.resetLocalSchedulingState(to);
+      await conversationStore.saveUserMessage(to, body);
+      const reply =
+          'Listo: borre la conversacion guardada y el borrador de cita en este chat. '
+          'Si quieres probar de cero, escribe hola de nuevo.';
+      await _sendReply(client, to: to, message: reply, replyMessageId: id);
+      await conversationStore.saveAssistantMessage(to, reply);
+      stdout.writeln('[TX] $to: $reply');
+      return;
+    }
+
     await conversationStore.saveUserMessage(to, body);
     final businessProfile = await conversationStore.loadBusinessProfile();
     final conversationContext = await conversationStore.loadContext(to);
+
+    if (isStandaloneUserGreeting(body.trim()) &&
+        !schedulingSkipsNombrePrompt(body)) {
+      await schedulingService.resetLocalSchedulingState(to);
+    }
 
     // Prioridad: conocer cómo dirigirnos al usuario antes de agenda o modelo.
     if (_needsNombrePromptFirst(conversationContext, body)) {
