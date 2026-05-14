@@ -447,6 +447,29 @@ Implementado en `Dart2/whatsapp_web_puppeteer`:
 
 **Después de este bloque (actualizado mayo 2026):** cambio/cancelación/reprogramación listar ya estan implementados localmente en Dart. Siguientes hitos recomendados: **`pending_confirmation` opcional**, **documentación modo local puntualizada**, **`Dockerfile`/`docker-compose`**, **Supabase**.
 
+### WhatsApp Puppeteer (Dart2) — prueba siguiente sesión + cola UX (mayo 2026)
+
+**Qué hacer en la siguiente prueba (cuando retomes):**
+
+- Volver a ejecutar `dart run tool/seed_mayo_calendar.dart` si hace falta datos frescos; el seed usa **unos pocos pacientes ficticios**, cada uno con **el mismo `jid` estable** (p. ej. `paciente_arturo_demo@lid` para Arturo con más peso estadístico) y **no** el LID del número que prueba.
+- Confirmar desde el número real que *mis citas* / lista solo muestra **citas ligadas al JID de ese chat** (no todas las ocupaciones demo mezcladas).
+
+**Cola acordada (mayo 2026; estado tras commits recientes):**
+
+1. **Seed / datos “mis citas”** — Cada persona demo con identificador ficticio estable; tester con su JID real separado (**implementado en `tool/seed_mayo_calendar.dart`**; falta **confirmación manual** en WhatsApp).
+
+2. **Nombre en agendado** — *Mejorado en código*: `facts.nombre`, autoreserva/sinónimos, respuesta tras «a nombre de…» sin repetir saludo inicial, extractor de nombre plano cuando el asistente pidió nombre para la cita, `mergeDraft` no borra nombre/servicio al cambiar solo hora. **Validar** en chats largos.
+
+3. **Intención “¿qué día tengo cita?”** — *Implementado* (`_asksWhenIsMyAppointment` + orden en `handleMessage`). **Validar** con mensajes muy ambiguos.
+
+4. **“Solo la mía” tras listado** — *Pendiente*: interpretar aclaraciones sin disparar nueva captura de fecha; filtro opcional por `facts.nombre`.
+
+5. **Disponibilidad “la próxima semana”** — *Implementado* (`_AvailScope.nextWeek`, inferencia y respuestas). **Validar** en conversación mixta esta/próxima semana.
+
+6. **Precios en lista / typos** — *Parcial*: typo `presio` y orden heurísticas en `AIService`; *pendiente* bullets/formato cuando el usuario pide lista si no encaja bien con plantillas.
+
+7. **Nombre tras saludo** — *Mejorado*: primer turno puede volver a pedir nombre si el JSON tiene nombre viejo; extracción al contestar nombre de agenda/saludo. **Seguir** midiendo repetición del nombre del negocio si molesta UX.
+
 ### D) `Flutter/whatsapp_wa_drago` — Drago (whatsapp-web.js + InAppWebView) — *exploración abr. 2026*
 
 **Motivo:** probar la ruta “Dart obligatorio + UI” con el paquete **`drago_whatsapp_flutter`** (WPP inyectado en un WebView), como alternativa al CLI **Neonize**.
