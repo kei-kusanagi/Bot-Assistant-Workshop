@@ -510,11 +510,23 @@ bool _awaitingBookingNameReply(ConversationContext ctx) {
   return false;
 }
 
-bool _needsNombrePromptFirst(ConversationContext context, String trimmedBody) {
+bool _needsNombrePromptFirst(
+  ConversationContext context,
+  String trimmedBody,
+  BusinessProfile businessProfile,
+) {
   if (schedulingSkipsNombrePrompt(trimmedBody)) return false;
+  if (awaitingAppointmentListClarification(
+    context,
+    trimmedBody,
+    businessProfile,
+  )) {
+    return false;
+  }
   if (_awaitingBookingNameReply(context)) return false;
-  final userTurns =
-      context.recentMessages.where((m) => m.role == 'user').length;
+  final userTurns = context.recentMessages
+      .where((m) => m.role == 'user')
+      .length;
   final atConversationStart = userTurns <= 1;
   final nombre = context.facts['nombre']?.trim() ?? '';
   final soloSaludo = isStandaloneUserGreeting(trimmedBody);
@@ -586,7 +598,7 @@ Future<void> _generateAndSendReply(
     }
 
     // Prioridad: conocer cómo dirigirnos al usuario antes de agenda o modelo.
-    if (_needsNombrePromptFirst(conversationContext, body)) {
+    if (_needsNombrePromptFirst(conversationContext, body, businessProfile)) {
       final reply = _mensajePedirNombre(businessProfile);
       await _sendReply(client, to: to, message: reply, replyMessageId: id);
       await conversationStore.mergeConversationFacts(to, {

@@ -114,8 +114,9 @@ class LocalConversationStore {
     await ensureReady();
     final record = await _loadConversationRecord(jid);
     final now = DateTime.now().toUtc().toIso8601String();
-    final priorForFacts =
-        role == 'user' ? _messageList(record['messages']) : <ConversationMessage>[];
+    final priorForFacts = role == 'user'
+        ? _messageList(record['messages'])
+        : <ConversationMessage>[];
     final messages = List<ConversationMessage>.of(priorForFacts)
       ..add(
         ConversationMessage(

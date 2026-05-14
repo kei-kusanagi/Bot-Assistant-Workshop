@@ -60,6 +60,18 @@ class SchedulingService {
       return _beginRescheduleFlow(jid, message, lower);
     }
 
+    final listFollowUp = await _maybeAppointmentListFollowUp(
+      jid: jid,
+      message: message,
+      lower: lower,
+      businessProfile: businessProfile,
+      conversationContext: conversationContext,
+    );
+    if (listFollowUp != null) {
+      await _store.clearDraft(jid);
+      return listFollowUp;
+    }
+
     if (_schedulingYieldsToSmalltalk(lower)) {
       final d = await _store.loadDraft(jid);
       if (_hasAnyDraftValue(d)) {
@@ -548,6 +560,113 @@ class SchedulingService {
 
   String _formatAppointmentLine(int index, Appointment a) {
     return '$index. ${a.service} - ${_formatDate(a.start)} ${_formatTime(a.start)} (${a.name})';
+  }
+
+  /// Tras mostrar citas futuras: "solo la mía", "la 2", servicio corto sin nueva reserva.
+  Future<String?> _maybeAppointmentListFollowUp({
+    required String jid,
+    required String message,
+    required String lower,
+    required BusinessProfile businessProfile,
+    required ConversationContext conversationContext,
+  }) async {
+    if (!_assistantRecentlyListedFutureAppointments(conversationContext)) {
+      return null;
+    }
+    if (!_userNarrowsListedAppointmentReply(message, businessProfile)) {
+      return null;
+    }
+    if (_asksListAppointments(lower) ||
+        _asksWhenIsMyAppointment(lower) ||
+        _asksCancelAppointment(lower) ||
+        _asksRescheduleAppointment(lower)) {
+      return null;
+    }
+    final newBookingIntent =
+        _isBookingMessage(lower) ||
+        _asksForAvailability(lower) ||
+        lower.contains('disponib');
+    final soloMine =
+        _normalize(lower).contains('solo') &&
+        (_normalize(lower).contains('mia') ||
+            _normalize(lower).contains('mio') ||
+            _normalize(lower).contains('mi cita'));
+    final cualMine =
+        _normalize(lower).contains('cual') && _normalize(lower).contains('mia');
+    if (newBookingIntent && !(soloMine || cualMine)) {
+      return null;
+    }
+
+    final list = await _store.futureAppointmentsForJid(jid);
+    if (list.isEmpty) return null;
+
+    final n = _normalize(lower);
+
+    final pickIdx = _parseOrdinalAppointmentPick(n);
+    if (pickIdx != null) {
+      if (pickIdx < 1 || pickIdx > list.length) {
+        return 'En la lista solo hay numeros del **1** al **${list.length}**. '
+            'Responde por ejemplo *la 1* o *la 2*.';
+      }
+      final a = list[pickIdx - 1];
+      return 'Esta es la **$pickIdx**:\n${_formatAppointmentLine(pickIdx, a)}';
+    }
+
+    if (soloMine || cualMine) {
+      final nombre = conversationContext.facts['nombre']?.trim();
+      if (nombre == null || nombre.isEmpty) {
+        if (list.length == 1) {
+          return 'La unica cita futura que veo en este chat es:\n'
+              '${_formatAppointmentLine(1, list.first)}';
+        }
+        return 'Hay **${list.length}** citas; para decirte *la tuya* necesito tu nombre '
+            'en memoria o que elijas numero (*la 1*, *la 2*...).\n'
+            '${_numberedAppointmentsHeading(list, '')}';
+      }
+      final nomN = _normalize(nombre);
+      final parts = nomN
+          .split(RegExp(r'\s+'))
+          .where((p) => p.length >= 2)
+          .toList();
+      final matches = list.where((a) {
+        final an = _normalize(a.name);
+        if (an.contains(nomN)) return true;
+        if (parts.length >= 2) {
+          return parts.every((p) => an.contains(p));
+        }
+        return parts.isNotEmpty && an.contains(parts.first);
+      }).toList();
+      if (matches.length == 1) {
+        return 'La que coincide con *$nombre*:\n${_formatAppointmentLine(1, matches.first)}';
+      }
+      if (matches.isEmpty) {
+        return 'No encontre una cita con nombre parecido a *$nombre*. '
+            'Estas son las activas:\n${_numberedAppointmentsHeading(list, '')}\n'
+            'Responde *la 1*, *la 2*...';
+      }
+      return 'Hay varias con datos parecidos. Elige:\n'
+          '${_numberedAppointmentsHeading(matches, '')}';
+    }
+
+    final svc = _extractService(message, businessProfile);
+    if (svc != null &&
+        message.trim().length < 96 &&
+        !_pricingIntentInMessage(n) &&
+        !_asksForAvailability(lower)) {
+      final matches = list.where((a) => a.service == svc).toList();
+      if (matches.isEmpty) {
+        return 'No veo una cita futura de **$svc** en este chat. '
+            'Lista actual:\n${_numberedAppointmentsHeading(list, '')}';
+      }
+      if (matches.length == 1) {
+        return 'La cita de **$svc**:\n${_formatAppointmentLine(1, matches.first)}';
+      }
+      return 'Hay varias de **$svc**. Cual te refieres?\n'
+          '${_numberedAppointmentsHeading(matches, '')}\n'
+          'Responde *la 1*, *la 2*... segun esta lista.';
+    }
+
+    return null;
   }
 
   Future<List<DateTime>> availableSlots(
@@ -1208,6 +1327,101 @@ bool _asksWhenIsMyAppointment(String lower) {
   return false;
 }
 
+bool _assistantRecentlyListedFutureAppointments(ConversationContext ctx) {
+  for (var i = ctx.recentMessages.length - 1; i >= 0; i--) {
+    final m = ctx.recentMessages[i];
+    if (m.role != 'assistant') continue;
+    final t = m.text.toLowerCase();
+    if (t.contains('no tengo citas futuras') ||
+        t.contains('no hay citas futuras')) {
+      return false;
+    }
+    if (t.contains('proximas citas')) {
+      return !t.contains('cancelar') && !t.contains('reprogramar');
+    }
+    if (RegExp(r'^\d+\.\s', multiLine: true).hasMatch(m.text) &&
+        !t.contains('cancelar') &&
+        !t.contains('reprogramar')) {
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+bool _pricingIntentInMessage(String normalizedLower) {
+  return normalizedLower.contains('precio') ||
+      normalizedLower.contains('presio') ||
+      normalizedLower.contains('costo') ||
+      normalizedLower.contains('cuanto');
+}
+
+bool _userNarrowsListedAppointmentReply(
+  String message,
+  BusinessProfile profile,
+) {
+  final lower = message.trim();
+  final n = _normalize(lower);
+  if (n.length > 160) return false;
+
+  if (_parseOrdinalAppointmentPick(n) != null) return true;
+
+  if (RegExp(
+    r'\b(?:la|el)\s+(primera|segunda|tercera|cuarta|quinta)\b',
+  ).hasMatch(n)) {
+    return true;
+  }
+
+  if (n.contains('solo') &&
+      (n.contains('mia') || n.contains('mio') || n.contains('mi cita'))) {
+    return true;
+  }
+  if (n.contains('cual') && n.contains('mia')) return true;
+
+  final svc = _extractService(message, profile);
+  if (svc != null &&
+      lower.length < 96 &&
+      !_pricingIntentInMessage(n) &&
+      !n.contains('agendar') &&
+      !n.contains('quiero cita') &&
+      !n.contains('disponib')) {
+    return true;
+  }
+
+  return false;
+}
+
+int? _parseOrdinalAppointmentPick(String normalizedLower) {
+  final compact = normalizedLower.trim();
+  if (RegExp(r'^\s*([1-9]|1\d)\s*$').hasMatch(compact)) {
+    return int.tryParse(compact.trim());
+  }
+  final opt = RegExp(
+    r'\b(?:opcion|numero)\s+([1-9]|1\d)\b',
+  ).firstMatch(normalizedLower);
+  if (opt != null) return int.tryParse(opt.group(1)!);
+
+  final la = RegExp(r'\bla\s+([1-9]|1\d)\b').firstMatch(normalizedLower);
+  if (la != null) return int.tryParse(la.group(1)!);
+
+  if (normalizedLower.contains('primera')) return 1;
+  if (normalizedLower.contains('segunda')) return 2;
+  if (normalizedLower.contains('tercera')) return 3;
+  if (normalizedLower.contains('cuarta')) return 4;
+  if (normalizedLower.contains('quinta')) return 5;
+  return null;
+}
+
+/// Expuesto para el ejecutable: evitar prompt de nombre antes que aclaraciones tras ver citas.
+bool awaitingAppointmentListClarification(
+  ConversationContext ctx,
+  String rawMessage,
+  BusinessProfile profile,
+) {
+  return _assistantRecentlyListedFutureAppointments(ctx) &&
+      _userNarrowsListedAppointmentReply(rawMessage, profile);
+}
+
 bool _asksCancelAppointment(String lower) {
   final mentionsAppointment = lower.contains('cita') || lower.contains('visit');
   if (mentionsAppointment &&
@@ -1568,31 +1782,27 @@ bool _schedulingYieldsToSmalltalk(String lower) {
 
 String? _parsePreferredTime(String message) {
   var lower = _normalize(message).replaceAll(RegExp(r'\balas\b'), 'a las');
-  lower =
-      lower
-          .replaceAll(RegExp(r'\b\d{4}-\d{2}-\d{2}\b'), ' ')
-          .replaceAll(RegExp(r'\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b'), ' ');
+  lower = lower
+      .replaceAll(RegExp(r'\b\d{4}-\d{2}-\d{2}\b'), ' ')
+      .replaceAll(RegExp(r'\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b'), ' ');
 
-  for (final match
-      in RegExp(
-        r'\b(\d{1,2}):(\d{2})\s*(am|pm|a\.m\.|p\.m\.)?\b',
-      ).allMatches(lower)) {
+  for (final match in RegExp(
+    r'\b(\d{1,2}):(\d{2})\s*(am|pm|a\.m\.|p\.m\.)?\b',
+  ).allMatches(lower)) {
     final clock = _coerceBookingClock(match);
     if (clock != null) return clock;
   }
 
-  for (final match
-      in RegExp(
-        r'\ba las\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\b',
-      ).allMatches(lower)) {
+  for (final match in RegExp(
+    r'\ba las\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\b',
+  ).allMatches(lower)) {
     final clock = _coerceBookingClock(match);
     if (clock != null) return clock;
   }
 
-  for (final match
-      in RegExp(
-        r'^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\s*$',
-      ).allMatches(lower.trim())) {
+  for (final match in RegExp(
+    r'^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?\s*$',
+  ).allMatches(lower.trim())) {
     final clock = _coerceBookingClock(match);
     if (clock != null) return clock;
   }
@@ -1609,9 +1819,7 @@ String? _coerceBookingClock(RegExpMatch match) {
   if (hour == null || hour > 23 || minute > 59) return null;
   if (suffix != null && suffix.contains('p') && hour < 12) hour += 12;
   if (suffix != null && suffix.contains('a') && hour == 12) hour = 0;
-  if ((suffix == null || suffix.trim().isEmpty) &&
-      hour >= 1 &&
-      hour <= 7) {
+  if ((suffix == null || suffix.trim().isEmpty) && hour >= 1 && hour <= 7) {
     hour += 12;
   }
   if (hour < 8 || hour > 21) return null;

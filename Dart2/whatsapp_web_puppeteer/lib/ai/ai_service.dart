@@ -37,8 +37,7 @@ class AIService {
         userName: nombreUsuario ?? '',
       );
       var reply =
-          templated ??
-          _defaultGreeting(profile, userFirstName: nombreUsuario);
+          templated ?? _defaultGreeting(profile, userFirstName: nombreUsuario);
       final n = nombreUsuario?.trim();
       if (n == null || n.isEmpty) {
         reply =
@@ -92,10 +91,14 @@ String? _directBusinessAnswer(String message, BusinessProfile profile) {
 }
 
 String? _directPricingAnswer(String lower, BusinessProfile profile) {
+  final wantsList = _userWantsPricingAsList(lower);
   final service = _findMentionedService(lower, profile);
   if (service != null) {
     final price = profile.servicePrices[service];
     if (price != null && price.trim().isNotEmpty) {
+      if (wantsList) {
+        return 'Precio de referencia:\n- *$service:* $price';
+      }
       return _renderTemplate(
         profile.responseTemplates['servicePricing'],
         profile,
@@ -111,12 +114,43 @@ String? _directPricingAnswer(String lower, BusinessProfile profile) {
   }
 
   if (profile.servicePrices.isNotEmpty) {
+    if (wantsList) {
+      return _formatPricingBulletList(profile);
+    }
     return _renderTemplate(profile.responseTemplates['pricingList'], profile);
   }
   return _renderTemplate(
     profile.responseTemplates['pricingUnavailable'],
     profile,
   );
+}
+
+bool _userWantsPricingAsList(String lower) {
+  final n = _normalize(lower);
+  return n.contains('lista') ||
+      n.contains('listado') ||
+      n.contains('vinetas') ||
+      n.contains('bullet') ||
+      n.contains('en puntos') ||
+      n.contains('punto por punto') ||
+      n.contains('uno por uno') ||
+      n.contains('item por item') ||
+      n.contains('renglon') ||
+      n.contains('renglones') ||
+      n.contains('separado por') ||
+      n.contains('desglos');
+}
+
+String _formatPricingBulletList(BusinessProfile profile) {
+  final entries = profile.servicePrices.entries.toList();
+  if (entries.isEmpty) return '';
+  final buf = StringBuffer(
+    'Precios de referencia (confirmar en consultorio):\n',
+  );
+  for (final e in entries) {
+    buf.writeln('- ${e.key}: ${e.value}');
+  }
+  return buf.toString().trim();
 }
 
 String? _findMentionedService(String lower, BusinessProfile profile) {
