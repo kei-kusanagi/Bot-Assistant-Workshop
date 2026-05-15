@@ -87,6 +87,11 @@ dart run
 Si aparece una ventana de Chrome ya logueada por la sesion anterior, no deberia
 pedir QR otra vez; borra `data/whatsapp-session/` si necesitas iniciar limpio.
 
+## Flujos diagramas para presentar
+
+- [Explicación simple sin código](../DOCS/AI_WHATSAPP_FLOW_SIMPLE.md)
+- [Diagrama tecnico detallado](../DOCS/AI_WHATSAPP_FLOW_DIAGRAM.md)
+
 ## Arquitectura IA
 
 La capa de IA esta documentada en:

@@ -1,160 +1,176 @@
-# Diagrama del bot WhatsApp + IA local
+# Diagrama técnico: bot WhatsApp (Dart2) + agenda local + IA opcional
 
-Este documento explica, a nivel ejecutivo, que hace el nuevo bot Dart2 y donde entra la IA local.
+**Proyecto:** `Dart2/whatsapp_web_puppeteer`  
+**Última actualización de esta guía:** mayo 2026.
 
-## Idea principal
+Documento ejecutivo→técnico: qué componentes hay y **en qué orden** decide el código al contestar.
 
-El bot usa WhatsApp Web para recibir/enviar mensajes, pero el bot Dart decide primero si puede responder con datos configurados del negocio. Si la respuesta no es directa, arma un prompt con memoria local, perfil del negocio y mensaje del usuario, y lo manda a Ollama local.
+---
 
-## Diagrama de flujo
+## 1. Vista ejecutiva (por capas)
+
+```mermaid
+flowchart TB
+    subgraph externos [Internet]
+      WS[Servicios WhatsApp / Meta]
+    end
+
+    subgraph maquina [Esta PC]
+      CH[Chrome + WhatsApp Web + Puppeteer]
+      APP[Ejecutable Dart bin/whatsapp_web_puppeteer.dart]
+      subgraph modulos [Módulos principales]
+        ST[LocalConversationStore]
+        SCH[SchedulingService]
+        AI[AIService + OllamaProvider]
+      end
+      subgraph datos [Archivos data/]
+        BP[business_profile.json]
+        AV[availability.json]
+        CE[calendar_events.json]
+        AP[appointments.json]
+        CV[store/conversations/]
+        DR[store/appointment_drafts/]
+      end
+    end
+
+    WS <--> CH
+    CH <--> APP
+    APP --> ST
+    APP --> SCH
+    APP --> AI
+    ST --> BP
+    ST --> CV
+    SCH --> AV
+    SCH --> CE
+    SCH --> AP
+    SCH --> DR
+    AI -.-> |HTTP opcional| OLL[Ollama localhost]
+```
+
+---
+
+## 2. Flujo detallado del mensaje (orden real en código)
+
+Este es el pipeline **tal como está cableado** hoy: la **agenda y reglas locales** pueden resolver **antes** de llamar a Ollama.
 
 ```mermaid
 flowchart TD
-    A[Persona escribe por WhatsApp] --> B[WhatsApp / WhatsApp Web]
-    B --> C[Chrome controlado por Dart + Puppeteer]
-    C --> D[Bot Dart2 whatsapp_web_puppeteer]
+    R["Usuario envía texto"] --> WPP["WA-JS / polling: mensaje entrante"]
+    WPP --> GEN["_generateAndSendReply"] 
 
-    D --> E{Recepcion del mensaje}
-    E -->|Evento WA-JS| F[chat.new_message]
-    E -->|Respaldo| G[Polling chats no leidos cada 3s]
-    F --> H[Normalizar mensaje]
-    G --> H
+    GEN --> LONG{"¿Muy largo?"}
+    LONG -->|"sí"| RLONG["Plantilla pedir resumen"]
+    LONG -->|"no"| RST["¿Reinicio conversacion?"]
 
-    H --> I{Filtro y limites}
-    I -->|No soportado newsletter/grupo/status| X[Ignorar]
-    I -->|Mensaje demasiado largo| Y[Responder pedir resumen]
-    I -->|Chat directo valido| J[LocalConversationStore]
+    RST -->|"sí"| CLALL["resetConversation + resetLocalSchedulingState"]
+    CLALL --> RLONG2["Confirmar borrado"]
+    RST -->|"no"| SAVE["saveUserMessage"]
+    SAVE --> LOAD["loadBusinessProfile + loadContext"]
 
-    J --> K[Guardar mensaje por JID]
-    K --> L[Cargar memoria reciente + datos estructurados]
-    L --> M[Cargar business_profile.json]
-    M --> N{Respuesta directa por datos?}
+    LOAD --> HSAL["¿Saludo suelto? resetLocalSchedulingState si aplica"]
+    HSAL --> NPRIM["_needsNombrePromptFirst + awaitingAppointmentListClarification"]
 
-    N -->|Ubicacion / horarios / servicios / precios| O[Renderizar responseTemplates]
-    N -->|Caso conversacional| P[AIService]
-    P --> Q[Construye prompt: sistema + negocio + memoria + mensaje]
-    Q --> R[AIProvider contrato generico]
-    R --> S[OllamaProvider]
-    S --> T[HTTP local localhost:11434]
-    T --> U[Ollama local]
-    U --> V[Modelo LLM local llama3.2 / qwen / mistral]
-    V --> U
-    U --> S
-    S --> P
+    NPRIM -->|"pedir nombre"| NOM["_mensajePedirNombre + merge nombre_pedido"]
+    NPRIM -->|"no"| SCHD["SchedulingService.handleMessage"]
 
-    O --> W[Respuesta final]
-    P --> W
-    Y --> W
-    W --> Z[Guardar respuesta del asistente]
-    Z --> AA[Enviar respuesta por WA-JS]
-    AA --> B
-    B --> AB[Persona recibe respuesta en WhatsApp]
+    SCHD --> OUT1{"¿String agenda?"}
+
+    SCHD -.->|"null"| AIGET["AIService.getResponse"]
+    NOM --> SEND
+    RLONG --> SEND
+    RLONG2 --> SEND
+    OUT1 -->|"sí texto"| SEND["saveAssistantMessage + envío WA"]
+
+    AIGET --> DIR["_directBusinessAnswer plantillas ubicacion precios"]
+    DIR -->|"no null"| SEND
+    DIR -->|"null"| OLLAPI["OllamaProvider HTTP"]
+    OLLAPI --> SEND
+
+    SEND --> WPP
+
+    subgraph detalle_agenda ["Dentro de SchedulingService resumen"]
+      direction TB
+      M0["Management draft cancel-reprogramar"]
+      M1["Listar citas / cuando tengo cita"]
+      M2["Seguimiento lista: solo la mía ordinal servicio"]
+      M3["smalltalk: limpiar borrador"]
+      M4["mergeDraft + disponibilidad + slots"]
+      M5["createConfirmedAppointment"]
+    end
 ```
 
+**Notas rápidas**
 
+- **`awaitingAppointmentListClarification`**: evita que el ejecutable bloquee con “pide nombre” cuando el usuario está **aclarando una lista de citas** (“solo la mía”, “la 2”).
+- **`isSlotAvailable`**: comprueba rejilla laboral + aviso mínimo + huecos contra **calendar_events**, no solo “primeros N slots”.
+- **`_parsePreferredTime`**: evita confundir el **día** del formato `DD/MM/AAAA` con la **hora**.
 
-## Que queda local y que usa internet
+---
+
+## 3. Piezas locales vs internet
 
 ```mermaid
 flowchart LR
-    subgraph Internet
-      W[WhatsApp / servidores Meta]
+    subgraph NET [Internet necesario para WA]
+      W[Intención usuarios WhatsApp]
     end
 
-    subgraph Maquina local
-      C[Chrome WhatsApp Web]
+    subgraph LOC [Misma PC sin API de IA de terceros]
       D[Bot Dart]
-      BZ[business_profile.json]
-      LS[data/store/conversations por JID]
-      S[AIService / AIProvider]
-      O[Ollama localhost:11434]
-      M[Modelo LLM local]
+      J[JSON negocio + memoria + agenda demo]
+      O[Ollama + modelo LLM opcional]
     end
 
-    W <--> C
-    C <--> D
-    D <--> BZ
-    D <--> LS
-    D --> S
-    S --> O
-    O --> M
-    M --> O
-    O --> S
-    S --> D
+    W <--> LOC
 ```
 
-
-
-- **Si usa Ollama local**, el prompt hacia la IA va a `localhost:11434`, es decir, a la misma computadora.
-- **WhatsApp Web si usa internet**, porque necesita conectarse a WhatsApp para recibir y enviar mensajes.
-- **No se usan tokens de OpenAI/Anthropic** en esta configuracion.
-- **NanoClaw no se usa como dependencia**: se tomo el enfoque modular de adaptadores.
-- **El perfil del negocio y la memoria son locales**: `data/business_profile.json` y `data/store/conversations/`.
-
-## Responsabilidad de cada pieza
-
-
-| Pieza | Responsabilidad |
+| Componente | Rol |
 | --- | --- |
-| WhatsApp Web | Canal de entrada/salida de mensajes |
-| Chrome + Puppeteer | Mantener la sesion web vinculada por QR |
-| Bot Dart2 | Orquestar mensajes, eventos, polling, filtros y respuestas |
-| `LocalConversationStore` | Guardar memoria limitada por JID y cargar el perfil del negocio |
-| `business_profile.json` | Fuente editable del negocio: servicios, precios, horarios, ubicacion, politicas y plantillas |
-| `AIService` | Responder con plantillas cuando aplica o armar el prompt para Ollama |
-| `AIProvider` | Contrato para cambiar proveedores de IA |
-| `OllamaProvider` | Implementacion HTTP contra Ollama local |
-| Ollama | Ejecutar modelos locales y exponer API |
-| Modelo LLM | Generar la respuesta conversacional |
+| **Chrome + Puppeteer + WA-JS** | Mantener sesión WhatsApp Web; enviar/recibir texto. |
+| **`LocalConversationStore`** | Memoria corta (`facts`, últimos mensajes), actualización desde texto del usuario; archivos por JID en `store/conversations/`. |
+| **`SchedulingService`** | Intenciones de cita/disponibilidad; borradores; listar/cancelar/reprogramar; ocupa slot y escribe citas/eventos locales. |
+| **`AIService`** | Respuestas directas desde `business_profile` (plantillas/heurísticas) o prompt a **OllamaProvider**. |
+| **`OllamaProvider`** | HTTP a `OLLAMA_BASE_URL` (normalmente `localhost:11434`). |
+| **JSON en `data/`** | Perfil comercial, disponibilidad, eventos, citas, borradores. |
 
+---
 
-## Como se arma la respuesta
+## 4. Mapa de archivos de datos (demo local)
 
-El mensaje del usuario no siempre llega al modelo. Antes pasa por reglas locales:
+```mermaid
+flowchart TD
+    BP["business_profile.json"] --> T1["Textos servicios precios horario templates"]
+    AV["availability.json"] --> T2["Franjas y minutos de cita"]
+    CE["calendar_events.json"] --> T3["Huecos ocupados bloques citas"]
+    AP["appointments.json"] --> T4["Registro citas confirmed etc"]
+    CV["store/conversations/*.json"] --> T5["Memoria y hechos por JID"]
+    DR["store/appointment_drafts/"] --> T6["Borrador nueva cita"]
+    MG["appointment_drafts mgmt_*.json"] --> T7["Borrador cancelar reprogramar TTL"]
+```
 
-1. Se descartan origenes no soportados (`@newsletter`, grupos, broadcasts).
-2. Se rechazan mensajes demasiado largos para evitar abuso.
-3. Se guarda memoria limitada por JID.
-4. Se revisa `business_profile.json`.
-5. Si la pregunta es directa sobre ubicacion, horarios, servicios, tipo de negocio o precios, se responde con `responseTemplates` del JSON.
-6. Si hace falta conversacion libre, se manda a Ollama con contexto.
+---
 
-Cuando se llama a Ollama, el prompt contiene:
+## 5. Cómo se arma el prompt cuando **sí** se llama a Ollama
+
+Solo cuando no bastó agenda + plantillas:
 
 ```text
-Eres un asistente de WhatsApp para un negocio que trabaja por citas.
-Responde siempre en español.
-Se breve, amable y claro.
-No inventes disponibilidad, precios, ubicaciones ni datos medicos.
-
+Eres un asistente de WhatsApp...
 Conocimiento oficial del negocio:
-<business_profile.json>
+(bloque desde business_profile / toPromptBlock)
 
 Memoria local de esta conversacion:
-<resumen, facts y ultimos mensajes del JID>
+(resumen facts mensajes recientes)
 
 Mensaje del usuario:
-<mensaje recibido por WhatsApp>
+(texto WhatsApp)
 
 Respuesta:
 ```
 
-Ese texto completo llega a Ollama solo cuando no hubo una respuesta directa desde datos locales. Ollama se lo pasa al modelo local y devuelve la respuesta al bot.
+---
 
-## Conocimiento y memoria implementados
+## 6. Documentos relacionados
 
-El conocimiento del negocio ya vive en un JSON local editable:
-
-```mermaid
-flowchart TD
-    A[data/business_profile.json] --> B[Nombre y tipo de negocio]
-    A --> C[Servicios]
-    A --> D[Precios de ejemplo / referencia]
-    A --> E[Horarios]
-    A --> F[Ubicacion]
-    A --> G[Politicas]
-    A --> H[responseTemplates]
-    H --> I[Respuestas directas sin inventar]
-```
-
-La memoria vive en `data/store/conversations/`, un archivo por JID. Guarda solo los ultimos 20 mensajes, recorta cada mensaje a 1000 caracteres y rechaza mensajes entrantes mayores a 2000 caracteres. Esto conserva contexto sin mandar conversaciones infinitas al modelo.
+- `whatsapp_web_puppeteer/README.md`: cómo correrlo, `.env`, seed mayo, troubleshooting QR.
+- `AI_ADAPTER_ARCHITECTURE.md`: contrato `AIProvider`, Ollama, extensibilidad.
